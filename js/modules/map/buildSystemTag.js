@@ -1,4 +1,4 @@
-import { loadSystemsData } from '/bookmark-viewer/js/loadSystemsData.js'; // Corrected path
+import { loadSystemsData } from '../../loadSystemsData.js';
 
 const classColors = {
     "HS": "#2FEFEF",

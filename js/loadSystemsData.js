@@ -1,6 +1,6 @@
 export async function loadSystemsData() {
-    const url = '/bookmark-viewer/data/systems.json';
-    console.log(`Fetching systems data from: ${url}`);
+    const url = new URL('../data/systems.json', import.meta.url);
+    console.log(`Fetching systems data from: ${url.href}`);
     const response = await fetch(url);
     console.log(`Response status: ${response.status}`);
     if (!response.ok) {

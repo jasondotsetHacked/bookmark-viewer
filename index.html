@@ -5,11 +5,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>setHacked Bookmark Viewer</title>
-    <link rel="stylesheet" href="./bookmark-viewer/css/styles.css">
-    <link rel="manifest" href="/bookmark-viewer/manifest.json">
+    <link rel="stylesheet" href="css/styles.css">
+    <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#121212">
     <meta name="description" content="setHacked Bookmark Viewer">
-    <link rel="apple-touch-icon" href="/bookmark-viewer/assets/icons/icon-192x192.png">
+    <link rel="apple-touch-icon" href="assets/icons/icon-192x192.png">
 </head>
 
 <body>
@@ -40,7 +40,7 @@
         <div class="modal-content">
             <span id="closeModal" class="close">&times;</span>
             <video controls>
-                <source src="/bookmark-viewer/assets/video/help.mp4" type="video/mp4">
+                <source src="assets/video/help.mp4" type="video/mp4">
                 Your browser does not support the video tag.
             </video>
         </div>
@@ -55,18 +55,18 @@
     <script src="https://d3js.org/d3.v6.min.js"></script>
 
     <!-- Application Scripts -->
-    <script type="module" src="/bookmark-viewer/js/db.js"></script>
-    <script type="module" src="/bookmark-viewer/js/table.js"></script>
-    <script type="module" src="/bookmark-viewer/js/map.js"></script>
-    <script type="module" src="/bookmark-viewer/js/clipboard.js"></script>
-    <script type="module" src="/bookmark-viewer/js/utils.js"></script>
-    <script type="module" src="/bookmark-viewer/js/main.js"></script>
+    <script type="module" src="js/db.js"></script>
+    <script type="module" src="js/table.js"></script>
+    <script type="module" src="js/map.js"></script>
+    <script type="module" src="js/clipboard.js"></script>
+    <script type="module" src="js/utils.js"></script>
+    <script type="module" src="js/main.js"></script>
     <script>
         console.log('index.html loaded');
     </script>
     <script>
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/bookmark-viewer/service-worker.js')
+            navigator.serviceWorker.register('service-worker.js')
                 .then(registration => {
                     console.log('Service Worker registered with scope:', registration.scope);
                 })

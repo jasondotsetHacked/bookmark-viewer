@@ -1,27 +1,30 @@
-const CACHE_NAME = 'bookmark-mapper-cache-v4';
-const urlsToCache = [
-    '/bookmark-viewer/index.html',
-    '/bookmark-viewer/css/styles.css',
-    '/bookmark-viewer/js/db.js',
-    '/bookmark-viewer/js/table.js',
-    '/bookmark-viewer/js/clipboard.js',
-    '/bookmark-viewer/js/loadSystemsData.js',
-    '/bookmark-viewer/js/utils.js',
-    '/bookmark-viewer/js/main.js',
-    '/bookmark-viewer/js/map.js',
-    '/bookmark-viewer/js/modules/map/buildSystemTag.js',
-    '/bookmark-viewer/js/modules/map/dragHandlers.js',
-    '/bookmark-viewer/js/modules/map/extractSystems.js',
-    '/bookmark-viewer/data/systems.json',
-    '/bookmark-viewer/assets/icons/icon-192x192.png',
-    '/bookmark-viewer/assets/icons/icon-512x512.png',
-    '/bookmark-viewer/assets/video/help.mp4'
+const CACHE_NAME = 'bookmark-mapper-cache-v5';
+const ASSET_PATHS = [
+    '.',
+    'index.html',
+    'css/styles.css',
+    'js/db.js',
+    'js/table.js',
+    'js/clipboard.js',
+    'js/loadSystemsData.js',
+    'js/utils.js',
+    'js/main.js',
+    'js/map.js',
+    'js/modules/map/buildSystemTag.js',
+    'js/modules/map/displayMap.js',
+    'js/modules/map/dragHandlers.js',
+    'js/modules/map/extractSystems.js',
+    'data/systems.json',
+    'assets/icons/icon-192x192.png',
+    'assets/icons/icon-512x512.png',
+    'assets/video/help.mp4'
 ];
 
 self.addEventListener('install', event => {
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then(cache => {
+                const urlsToCache = ASSET_PATHS.map(path => new URL(path, self.registration.scope).toString());
                 return cache.addAll(urlsToCache);
             })
     );
