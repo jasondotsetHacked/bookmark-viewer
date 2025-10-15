@@ -15,6 +15,10 @@ export function displayMap(data) {
   const connections = [];
   const statuses = {};
 
+  if (typeof window.setSignatureActiveSystem === 'function') {
+    window.setSignatureActiveSystem(null, data);
+  }
+
   const classColors = {
     "HS": "#2FEFEF",
     "LS": "#EFEF00",
@@ -315,6 +319,9 @@ export function displayMap(data) {
         const keys = ['Label', 'Type', 'Jumps', 'SOL', 'CON', 'REG', 'Date', 'Expiry', 'Creator']; // Define keys
         displayTable(keys, data, d.name); // Filter table by selected system
         lockNodes(simulation, nodes); // Lock all nodes in place
+        if (typeof window.setSignatureActiveSystem === 'function') {
+          window.setSignatureActiveSystem(d.name, data);
+        }
       }
     });
 
@@ -336,6 +343,9 @@ export function displayMap(data) {
       const keys = ['Label', 'Type', 'Jumps', 'SOL', 'CON', 'REG', 'Date', 'Expiry', 'Creator']; // Define keys
       displayTable(keys, data); // Reset table filter
       lockNodes(simulation, nodes); // Lock all nodes in place
+      if (typeof window.setSignatureActiveSystem === 'function') {
+        window.setSignatureActiveSystem(null, data);
+      }
     }
   });
 
@@ -399,6 +409,9 @@ function filterBookmarksBySystem(systemName) {
     getDataFromDB().then(data => {
         const filteredData = data.filter(row => row['SOL'] === systemName);
         displayTable(['Label', 'Type', 'Jumps', 'SOL', 'CON', 'REG', 'Date', 'Expiry', 'Creator'], filteredData);
+        if (typeof window.setSignatureActiveSystem === 'function') {
+            window.setSignatureActiveSystem(systemName, data);
+        }
     });
 }
 

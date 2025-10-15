@@ -29,6 +29,15 @@ async function clearDatabase() {
     tableContainer.innerHTML = '';
     mapContainer.innerHTML = '';
     document.getElementById('timestampDisplay').textContent = 'Data Timestamp: ';
+    if (typeof window.updateBookmarkSignatureMatches === 'function') {
+        window.updateBookmarkSignatureMatches(new Map());
+    }
+    if (typeof window.setSignatureBookmarkData === 'function') {
+        window.setSignatureBookmarkData([]);
+    }
+    if (typeof window.setSignatureActiveSystem === 'function') {
+        window.setSignatureActiveSystem(null, []);
+    }
 }
 
 async function saveDataToDB(parsedData) {

@@ -29,9 +29,81 @@
             <div id="errorContainer" class="error-message" aria-label="Error message"></div> <!-- Moved error container here -->
         </section>
 
-        <section class="content">
-            <div id="mapContainer" class="map-container" aria-label="Graphical map view"></div>
-            <div id="tableContainer" aria-label="Data table view"></div>
+        <section id="moduleGrid" class="module-grid" aria-label="Workspace modules">
+            <article class="module" data-module-id="map" data-grid-w="6" data-grid-h="4">
+                <header class="module-header">
+                    <h2>Map</h2>
+                </header>
+                <div class="module-body">
+                    <div id="mapContainer" class="module-scrollable" aria-label="Graphical map view"></div>
+                </div>
+                <div class="module-resize-handle" aria-hidden="true"></div>
+            </article>
+
+            <article class="module" data-module-id="bookmarks" data-grid-w="6" data-grid-h="5">
+                <header class="module-header">
+                    <h2>Bookmarks</h2>
+                </header>
+                <div class="module-body">
+                    <div class="module-legend" id="bookmarkLegend">
+                        <span class="legend-item legend-missing">Needs scan</span>
+                        <span class="legend-item legend-stale">Stale bookmark</span>
+                        <span class="legend-item legend-matched">Matched</span>
+                    </div>
+                    <div id="tableContainer" class="module-scrollable" aria-label="Data table view"></div>
+                </div>
+                <div class="module-resize-handle" aria-hidden="true"></div>
+            </article>
+
+            <article class="module" data-module-id="signatures" data-grid-w="4" data-grid-h="5">
+                <header class="module-header">
+                    <h2>Signatures</h2>
+                    <div class="module-status" id="signatureActiveSystem">No system selected</div>
+                </header>
+                <div class="module-body signature-module">
+                    <div class="signature-input-group">
+                        <label for="signatureInput" class="signature-label">Paste signature scan results</label>
+                        <textarea id="signatureInput" class="signature-input" spellcheck="false" placeholder="PJJ-909	Cosmic Signature		0.0%	11.42 AU&#10;EFJ-844	Cosmic Signature		0.0%	5.87 AU&#10;ZXF-045	Cosmic Signature		0.0%	12.43 AU"></textarea>
+                        <div class="signature-actions">
+                            <button id="processSignatureButton" type="button">Apply</button>
+                            <button id="clearSignatureButton" type="button">Clear</button>
+                            <label class="signature-checkbox">
+                                <input type="checkbox" id="signatureAutoSync" checked>
+                                <span>Auto match</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="signature-summary" id="signatureSummary">
+                        <div class="summary-card summary-missing">
+                            <strong id="summaryMissingCount">0</strong>
+                            <span>Need bookmarks</span>
+                        </div>
+                        <div class="summary-card summary-stale">
+                            <strong id="summaryStaleCount">0</strong>
+                            <span>Removable</span>
+                        </div>
+                        <div class="summary-card summary-matched">
+                            <strong id="summaryMatchedCount">0</strong>
+                            <span>Matched</span>
+                        </div>
+                    </div>
+                    <div class="signature-results">
+                        <section>
+                            <h3>Needs Scan</h3>
+                            <ul id="missingSignaturesList" class="signature-list" aria-live="polite"></ul>
+                        </section>
+                        <section>
+                            <h3>Stale Bookmarks</h3>
+                            <ul id="staleBookmarksList" class="signature-list" aria-live="polite"></ul>
+                        </section>
+                        <section>
+                            <h3>Matches</h3>
+                            <ul id="matchedSignaturesList" class="signature-list" aria-live="polite"></ul>
+                        </section>
+                    </div>
+                </div>
+                <div class="module-resize-handle" aria-hidden="true"></div>
+            </article>
         </section>
     </main>
 
@@ -57,6 +129,8 @@
     <!-- Application Scripts -->
     <script type="module" src="js/db.js"></script>
     <script type="module" src="js/table.js"></script>
+    <script type="module" src="js/layout.js"></script>
+    <script type="module" src="js/signatures.js"></script>
     <script type="module" src="js/map.js"></script>
     <script type="module" src="js/clipboard.js"></script>
     <script type="module" src="js/utils.js"></script>
