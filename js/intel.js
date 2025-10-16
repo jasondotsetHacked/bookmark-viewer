@@ -1,3 +1,5 @@
+import { loadSystemsData } from './loadSystemsData.js';
+
 const INTEL_DATA_KEY = 'systemIntel:notes:v1';
 const INTEL_NICKNAME_KEY = 'systemIntel:nicknames:v1';
 
@@ -16,6 +18,9 @@ const intelDom = {
     statusLabel: null,
     nicknameInput: null
 };
+
+let systemsIndex = null;
+let systemsIndexPromise = null;
 
 document.addEventListener('DOMContentLoaded', initSystemIntelModule);
 window.addEventListener('beforeunload', () => {
@@ -40,6 +45,12 @@ function initSystemIntelModule() {
     intelDom.textarea.addEventListener('input', handleIntelInput);
     intelDom.nicknameInput.addEventListener('input', handleNicknameInput);
     intelDom.nicknameInput.addEventListener('blur', commitNicknameDraft);
+
+    ensureSystemsIndex().then(() => {
+        if (intelState.currentSystem) {
+            updateIntelUI();
+        }
+    });
 
     updateIntelUI();
 }
@@ -180,6 +191,11 @@ function setSystemIntelActiveSystem(systemName) {
     commitIntelDraft();
     commitNicknameDraft();
     intelState.currentSystem = systemName || null;
+    ensureSystemsIndex().then(() => {
+        if (intelState.currentSystem === (systemName || null)) {
+            updateIntelUI();
+        }
+    });
     updateIntelUI();
 }
 
@@ -188,9 +204,7 @@ function updateIntelUI() {
     const nickname = system ? getSystemNickname(system) : '';
 
     if (intelDom.statusLabel) {
-        intelDom.statusLabel.textContent = system
-            ? `System: ${system}${nickname ? ` (Nickname: "${nickname}")` : ''}`
-            : 'No system selected';
+        renderStatusLabel(system, nickname);
     }
 
     if (intelDom.nicknameInput) {
@@ -259,6 +273,78 @@ function getSystemNickname(systemName) {
         nicknamesLoaded = true;
     }
     return intelState.nicknames.get(systemName) || '';
+}
+
+function ensureSystemsIndex() {
+    if (!systemsIndexPromise) {
+        systemsIndexPromise = loadSystemsData()
+            .then((systems) => {
+                systemsIndex = systems || {};
+                return systemsIndex;
+            })
+            .catch((error) => {
+                console.warn('Failed to load systems data for intel module', error);
+                systemsIndex = {};
+                return systemsIndex;
+            });
+    }
+    return systemsIndexPromise;
+}
+
+function getSystemInfo(systemName) {
+    if (!systemName || !systemsIndex) {
+        return null;
+    }
+    return systemsIndex[systemName] || null;
+}
+
+function getZKillUrl(systemName) {
+    const info = getSystemInfo(systemName);
+    if (!info || !info.id) {
+        return null;
+    }
+    return `https://zkillboard.com/system/${info.id}/`;
+}
+
+function renderStatusLabel(system, nickname) {
+    if (!intelDom.statusLabel) {
+        return;
+    }
+
+    const label = intelDom.statusLabel;
+    label.textContent = '';
+
+    if (!system) {
+        label.textContent = 'No system selected';
+        return;
+    }
+
+    const prefix = document.createElement('span');
+    prefix.textContent = 'System: ';
+    label.appendChild(prefix);
+
+    const linkUrl = getZKillUrl(system);
+
+    if (linkUrl) {
+        const anchor = document.createElement('a');
+        anchor.href = linkUrl;
+        anchor.target = '_blank';
+        anchor.rel = 'noopener noreferrer';
+        anchor.className = 'intel-system-link';
+        anchor.title = `Open ${system} on zKillboard`;
+        anchor.textContent = system;
+        label.appendChild(anchor);
+    } else {
+        const fallback = document.createElement('span');
+        fallback.textContent = system;
+        label.appendChild(fallback);
+    }
+
+    if (nickname) {
+        const nicknameSpan = document.createElement('span');
+        nicknameSpan.textContent = ` (Nickname: "${nickname}")`;
+        label.appendChild(nicknameSpan);
+    }
 }
 
 function dispatchNicknameUpdate(system, nickname) {

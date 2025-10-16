@@ -71,6 +71,21 @@ h1 {
     font-size: 0.75rem;
 }
 
+#layoutLockButton[data-locked="true"] {
+    background: rgba(0, 255, 0, 0.18);
+    color: #00ff00;
+    border-color: rgba(0, 255, 0, 0.8);
+}
+
+.layout-locked .module-header {
+    cursor: default;
+}
+
+.layout-locked .module-resize-handle {
+    display: none;
+    pointer-events: none;
+}
+
 .error-message {
     color: #ff0000;
     text-align: right;
@@ -269,6 +284,125 @@ main {
     padding: 8px;
     background-color: #111;
     min-height: 0;
+}
+
+#mapContainer {
+    position: relative;
+    overflow: hidden;
+}
+
+.map-search-controls {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    z-index: 10;
+    pointer-events: none;
+}
+
+.map-search-controls > * {
+    pointer-events: auto;
+}
+
+.map-search-toggle {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 1px solid rgba(0, 255, 0, 0.6);
+    background: rgba(0, 0, 0, 0.65);
+    color: #00ff00;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    transition: background 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+}
+
+.map-search-toggle:hover,
+.map-search-toggle:focus {
+    background: rgba(0, 255, 0, 0.16);
+    border-color: rgba(0, 255, 0, 0.9);
+}
+
+.map-search-toggle:focus-visible {
+    outline: 2px solid rgba(0, 255, 0, 0.85);
+    outline-offset: 2px;
+}
+
+.map-search-toggle svg {
+    display: block;
+}
+
+.map-search-panel {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 6px;
+    align-items: center;
+    background: rgba(0, 0, 0, 0.85);
+    border: 1px solid rgba(0, 255, 0, 0.5);
+    border-radius: 8px;
+    padding: 10px;
+    box-shadow: 0 8px 22px rgba(0, 255, 0, 0.2);
+    width: clamp(220px, 20vw, 280px);
+    backdrop-filter: blur(6px);
+}
+
+.map-search-panel[hidden] {
+    display: none !important;
+}
+
+.map-search-input {
+    background: rgba(0, 0, 0, 0.4);
+    color: #c8ffc8;
+    border: 1px solid rgba(0, 255, 0, 0.4);
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 0.8rem;
+}
+
+.map-search-input:focus {
+    border-color: #00ff00;
+    box-shadow: 0 0 8px rgba(0, 255, 0, 0.25);
+    outline: none;
+}
+
+.map-search-submit {
+    background: rgba(0, 255, 0, 0.18);
+    color: #00ff00;
+    border: 1px solid rgba(0, 255, 0, 0.55);
+    border-radius: 4px;
+    padding: 6px 14px;
+    font-family: inherit;
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.map-search-submit:hover,
+.map-search-submit:focus {
+    background: rgba(0, 255, 0, 0.28);
+    border-color: rgba(0, 255, 0, 0.9);
+}
+
+.map-search-submit:focus-visible {
+    outline: 2px solid rgba(0, 255, 0, 0.8);
+    outline-offset: 2px;
+}
+
+.map-search-message {
+    grid-column: 1 / -1;
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+    color: rgba(0, 255, 0, 0.75);
+    min-height: 0.85em;
+}
+
+.map-search-message-error {
+    color: #ff6b6b;
 }
 
 .module-resize-handle {
@@ -562,6 +696,27 @@ video {
     opacity: 0.4;
     cursor: not-allowed;
     box-shadow: none;
+}
+
+.intel-system-link {
+    color: #00ff00;
+    text-decoration: none;
+    border-bottom: 1px dotted rgba(0, 255, 0, 0.35);
+    padding-bottom: 1px;
+    text-transform: none;
+    transition: color 0.2s ease, border-color 0.2s ease;
+}
+
+.intel-system-link:hover,
+.intel-system-link:focus {
+    color: #8cff8c;
+    border-color: rgba(140, 255, 140, 0.85);
+    outline: none;
+}
+
+.intel-system-link:focus-visible {
+    outline: 2px solid rgba(0, 255, 0, 0.7);
+    outline-offset: 2px;
 }
 
 .intel-textarea {

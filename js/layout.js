@@ -14,6 +14,9 @@ const layoutState = new Map();
 let containerBaseWidth = 0;
 let containerBaseHeight = 0;
 let activeInteraction = null;
+const LOCK_STATE_KEY = `${STORAGE_PREFIX}lockState`;
+let isLayoutLocked = false;
+let lockToggleButton = null;
 
 const MAX_LAYOUT_ATTEMPTS = 8;
 const MIN_MEASURE_WIDTH = GRID_SIZE * MIN_GRID_W;
@@ -23,6 +26,14 @@ function initModuleGrid() {
     const container = document.getElementById('moduleGrid');
     if (!container) {
         return;
+    }
+
+    lockToggleButton = document.getElementById('layoutLockButton') || lockToggleButton;
+    const initialLockState = loadLockState();
+    setLayoutLocked(initialLockState, { persist: false });
+
+    if (lockToggleButton) {
+        lockToggleButton.addEventListener('click', onLockToggleButtonPressed);
     }
 
     const overlay = document.getElementById('appLoader');
@@ -63,6 +74,7 @@ function installMoveHandle(moduleEl, container, moduleId) {
     if (!handle) return;
 
     handle.addEventListener('pointerdown', (event) => {
+        if (isLayoutLocked) return;
         if (event.button !== 0) return;
         if (event.target.closest('button') || event.target.closest('a')) return;
         event.preventDefault();
@@ -75,6 +87,7 @@ function installResizeHandle(moduleEl, container, moduleId) {
     if (!handle) return;
 
     handle.addEventListener('pointerdown', (event) => {
+        if (isLayoutLocked) return;
         if (event.button !== 0) return;
         event.preventDefault();
         beginInteraction('resize', event, moduleEl, container, moduleId);
@@ -82,6 +95,10 @@ function installResizeHandle(moduleEl, container, moduleId) {
 }
 
 function beginInteraction(type, event, moduleEl, container, moduleId) {
+    if (isLayoutLocked) {
+        return;
+    }
+
     if (activeInteraction) {
         return;
     }
@@ -384,8 +401,8 @@ function applyInitialLayout(container, modules, measurement) {
     container.style.height = `${containerBaseHeight}px`;
     container.style.minHeight = `${containerBaseHeight}px`;
 
-    const gridWidth = Math.max(Math.floor(containerBaseWidth / GRID_SIZE), MIN_GRID_W * 3);
-    const gridHeight = Math.max(Math.floor(containerBaseHeight / GRID_SIZE), MIN_GRID_H * 4);
+    const gridWidth = Math.max(Math.floor(containerBaseWidth / GRID_SIZE), MIN_GRID_W);
+    const gridHeight = Math.max(Math.floor(containerBaseHeight / GRID_SIZE), MIN_GRID_H * 3);
     const responsiveDefaults = calculateResponsiveDefaults(gridWidth, gridHeight);
 
     let fallbackIndex = 0;
@@ -431,59 +448,192 @@ function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
 }
 
+function onLockToggleButtonPressed(event) {
+    event.preventDefault();
+    setLayoutLocked(!isLayoutLocked);
+}
+
+function setLayoutLocked(locked, { persist = true } = {}) {
+    const nextState = Boolean(locked);
+    const stateChanged = nextState !== isLayoutLocked;
+    isLayoutLocked = nextState;
+
+    updateLockUI();
+
+    if (isLayoutLocked) {
+        cancelActiveInteraction();
+    }
+
+    if (persist && stateChanged) {
+        persistLockState(isLayoutLocked);
+    }
+}
+
+function updateLockUI() {
+    document.body.classList.toggle('layout-locked', isLayoutLocked);
+    if (lockToggleButton) {
+        lockToggleButton.dataset.locked = isLayoutLocked ? 'true' : 'false';
+        lockToggleButton.textContent = isLayoutLocked ? 'Unlock Layout' : 'Lock Layout';
+        lockToggleButton.setAttribute('aria-pressed', isLayoutLocked ? 'true' : 'false');
+        lockToggleButton.setAttribute(
+            'aria-label',
+            isLayoutLocked ? 'Unlock the current layout' : 'Lock the current layout'
+        );
+    }
+}
+
+function loadLockState() {
+    try {
+        return localStorage.getItem(LOCK_STATE_KEY) === 'locked';
+    } catch (error) {
+        console.warn('Unable to read layout lock state', error);
+        return false;
+    }
+}
+
+function persistLockState(locked) {
+    try {
+        if (locked) {
+            localStorage.setItem(LOCK_STATE_KEY, 'locked');
+        } else {
+            localStorage.removeItem(LOCK_STATE_KEY);
+        }
+    } catch (error) {
+        console.warn('Unable to persist layout lock state', error);
+    }
+}
+
+function cancelActiveInteraction() {
+    if (!activeInteraction) {
+        return;
+    }
+
+    const { moduleEl, container, moduleId, previousLayout } = activeInteraction;
+
+    moduleEl.classList.remove('dragging');
+
+    window.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointerup', onPointerUpOrCancel);
+    window.removeEventListener('pointercancel', onPointerUpOrCancel);
+
+    if (previousLayout) {
+        layoutState.set(moduleId, previousLayout);
+        applyLayout(moduleEl, previousLayout);
+    }
+
+    cleanupInteraction();
+
+    if (container) {
+        enforceBounds(container);
+    }
+}
+
 document.addEventListener('DOMContentLoaded', initModuleGrid);
 
 export { initModuleGrid };
 
 function calculateResponsiveDefaults(gridWidth, gridHeight) {
-    const effectiveWidth = gridWidth;
-    const effectiveHeight = gridHeight;
+    const effectiveWidth = Math.max(gridWidth, MIN_GRID_W);
+    const effectiveHeight = Math.max(gridHeight, MIN_GRID_H * 2);
+    const largeBreakpoint = MIN_GRID_W * 3;
+    const mediumBreakpoint = MIN_GRID_W * 2;
 
-    const sideWidth = clamp(
-        Math.round(effectiveWidth * 0.24),
-        MIN_GRID_W,
-        effectiveWidth - MIN_GRID_W
-    );
-    const mainWidth = effectiveWidth - sideWidth;
+    if (effectiveWidth >= largeBreakpoint) {
+        return buildLargeLayout(effectiveWidth, effectiveHeight);
+    }
+
+    if (effectiveWidth >= mediumBreakpoint) {
+        return buildMediumLayout(effectiveWidth, effectiveHeight);
+    }
+
+    return buildSmallLayout(effectiveWidth, effectiveHeight);
+}
+
+function buildLargeLayout(widthUnits, heightUnits) {
+    const maxSideWidth = Math.max(MIN_GRID_W, widthUnits - MIN_GRID_W);
+    const sideWidth = clamp(Math.round(widthUnits * 0.26), MIN_GRID_W, maxSideWidth);
+    const mainWidth = widthUnits - sideWidth;
+
+    if (mainWidth < MIN_GRID_W) {
+        return buildMediumLayout(widthUnits, heightUnits);
+    }
 
     const mapHeight = clamp(
-        Math.round(effectiveHeight * 0.6),
+        Math.round(heightUnits * 0.55),
         MIN_GRID_H,
-        effectiveHeight - MIN_GRID_H
+        Math.max(MIN_GRID_H, heightUnits - MIN_GRID_H)
     );
-    const bookmarksHeight = effectiveHeight - mapHeight;
-
-    const intelHeight = clamp(
-        Math.round(effectiveHeight * 0.24),
+    const bookmarksHeight = Math.max(MIN_GRID_H, heightUnits - mapHeight);
+    const signaturesHeight = clamp(
+        Math.round(heightUnits * 0.58),
         MIN_GRID_H,
-        effectiveHeight - MIN_GRID_H
+        Math.max(MIN_GRID_H, heightUnits - MIN_GRID_H)
     );
-    const signaturesHeight = effectiveHeight - intelHeight;
+    const intelHeight = Math.max(MIN_GRID_H, heightUnits - signaturesHeight);
 
     return {
-        map: {
-            x: 0,
-            y: 0,
-            w: mainWidth,
-            h: mapHeight
-        },
-        bookmarks: {
-            x: 0,
-            y: mapHeight,
-            w: mainWidth,
-            h: bookmarksHeight
-        },
-        signatures: {
-            x: mainWidth,
-            y: 0,
-            w: sideWidth,
-            h: signaturesHeight
-        },
-        intel: {
-            x: mainWidth,
-            y: signaturesHeight,
-            w: sideWidth,
-            h: intelHeight
-        }
+        map: { x: 0, y: 0, w: mainWidth, h: mapHeight },
+        bookmarks: { x: 0, y: mapHeight, w: mainWidth, h: bookmarksHeight },
+        signatures: { x: mainWidth, y: 0, w: sideWidth, h: signaturesHeight },
+        intel: { x: mainWidth, y: signaturesHeight, w: sideWidth, h: intelHeight }
+    };
+}
+
+function buildMediumLayout(widthUnits, heightUnits) {
+    const mapHeight = clamp(
+        Math.round(heightUnits * 0.48),
+        MIN_GRID_H,
+        Math.max(MIN_GRID_H, heightUnits - MIN_GRID_H * 2)
+    );
+    const bookmarksHeight = clamp(
+        Math.round(heightUnits * 0.28),
+        MIN_GRID_H,
+        Math.max(MIN_GRID_H, heightUnits - mapHeight - MIN_GRID_H)
+    );
+
+    const lowerY = mapHeight + bookmarksHeight;
+    const bottomHeight = Math.max(MIN_GRID_H, heightUnits - lowerY);
+
+    let leftWidth = Math.max(MIN_GRID_W, Math.floor(widthUnits / 2));
+    let rightWidth = widthUnits - leftWidth;
+    if (rightWidth < MIN_GRID_W) {
+        rightWidth = MIN_GRID_W;
+        leftWidth = Math.max(MIN_GRID_W, widthUnits - rightWidth);
+    }
+
+    return {
+        map: { x: 0, y: 0, w: widthUnits, h: mapHeight },
+        bookmarks: { x: 0, y: mapHeight, w: widthUnits, h: bookmarksHeight },
+        signatures: { x: 0, y: lowerY, w: leftWidth, h: bottomHeight },
+        intel: { x: leftWidth, y: lowerY, w: rightWidth, h: bottomHeight }
+    };
+}
+
+function buildSmallLayout(widthUnits, heightUnits) {
+    const mapHeight = clamp(
+        Math.round(heightUnits * 0.5),
+        MIN_GRID_H,
+        Math.max(MIN_GRID_H, heightUnits - MIN_GRID_H * 3)
+    );
+    const bookmarksHeight = clamp(
+        Math.round(heightUnits * 0.3),
+        MIN_GRID_H,
+        Math.max(MIN_GRID_H, heightUnits - mapHeight - MIN_GRID_H * 2)
+    );
+
+    const lowerStart = mapHeight + bookmarksHeight;
+    const remainingHeight = Math.max(MIN_GRID_H * 2, heightUnits - lowerStart);
+    const signaturesHeight = clamp(
+        Math.round(remainingHeight * 0.55),
+        MIN_GRID_H,
+        Math.max(MIN_GRID_H, remainingHeight - MIN_GRID_H)
+    );
+    const intelHeight = Math.max(MIN_GRID_H, remainingHeight - signaturesHeight);
+
+    return {
+        map: { x: 0, y: 0, w: widthUnits, h: mapHeight },
+        bookmarks: { x: 0, y: mapHeight, w: widthUnits, h: bookmarksHeight },
+        signatures: { x: 0, y: lowerStart, w: widthUnits, h: signaturesHeight },
+        intel: { x: 0, y: lowerStart + signaturesHeight, w: widthUnits, h: intelHeight }
     };
 }
