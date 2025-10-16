@@ -47,10 +47,10 @@ function initModuleGrid() {
             }
         }
 
-        const finalMeasurement = measurement || getFallbackMeasurement();
+        const finalMeasurement = measurement || getFallbackMeasurement(container);
         applyInitialLayout(container, modules, finalMeasurement);
+        enforceBounds(container);
         layoutApplied = true;
-        updateContainerExtents(container);
         window.addEventListener('resize', () => enforceBounds(container));
         finalizeLayoutLoader(overlay);
     };
@@ -204,16 +204,13 @@ function applyLayout(moduleEl, layout) {
 
 function ensureContainerForPreview(container, moduleEl) {
     const rect = getModuleRect(moduleEl);
-    const bottom = rect.top + rect.height;
     const right = rect.left + rect.width;
 
-    if (bottom + GRID_SIZE > containerBaseHeight) {
-        container.style.height = `${bottom + GRID_SIZE}px`;
-    }
-
-    if (right + GRID_SIZE > containerBaseWidth) {
-        container.style.minWidth = `${right + GRID_SIZE}px`;
-    }
+    const widthPx = Math.max(containerBaseWidth, right + GRID_SIZE);
+    container.style.width = `${widthPx}px`;
+    container.style.minWidth = `${widthPx}px`;
+    container.style.height = `${containerBaseHeight}px`;
+    container.style.minHeight = `${containerBaseHeight}px`;
 }
 
 function updateContainerExtents(container) {
@@ -227,8 +224,12 @@ function updateContainerExtents(container) {
         if (right > maxRight) maxRight = right;
     });
 
-    container.style.height = `${maxBottom + GRID_SIZE}px`;
-    container.style.minWidth = `${Math.max(containerBaseWidth, maxRight + GRID_SIZE)}px`;
+    const widthPx = Math.max(containerBaseWidth, maxRight + GRID_SIZE);
+    const heightPx = Math.max(containerBaseHeight, maxBottom + GRID_SIZE);
+    container.style.width = `${widthPx}px`;
+    container.style.minWidth = `${widthPx}px`;
+    container.style.height = `${heightPx}px`;
+    container.style.minHeight = `${heightPx}px`;
 }
 
 function detectCollision(moduleId, layout) {
@@ -247,8 +248,14 @@ function detectCollision(moduleId, layout) {
 }
 
 function enforceBounds(container) {
-    containerBaseWidth = container.clientWidth || containerBaseWidth;
-    containerBaseHeight = Math.max(containerBaseHeight, container.clientHeight || containerBaseHeight);
+    const measurement = measureContainer(container) || getFallbackMeasurement(container);
+    containerBaseWidth = measurement.width;
+    containerBaseHeight = measurement.height;
+
+    container.style.width = `${containerBaseWidth}px`;
+    container.style.minWidth = `${containerBaseWidth}px`;
+    container.style.height = `${containerBaseHeight}px`;
+    container.style.minHeight = `${containerBaseHeight}px`;
 
     layoutState.forEach((layout, moduleId) => {
         const moduleEl = container.querySelector(`.module[data-module-id="${moduleId}"]`);
@@ -318,42 +325,64 @@ function saveLayout(moduleId, layout) {
 }
 
 function measureContainer(container) {
-    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 960;
-    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 720;
-    const rect = container.getBoundingClientRect();
-    const padding = 24;
-
-    const width = Math.max(rect.width, viewportWidth - rect.left - padding);
-    const height = Math.max(rect.height, viewportHeight - rect.top - padding);
-
-    if (width < MIN_MEASURE_WIDTH || height < MIN_MEASURE_HEIGHT) {
+    const space = computeAvailableViewportSpace(container);
+    if (space.width < MIN_MEASURE_WIDTH || space.height < MIN_MEASURE_HEIGHT) {
         return null;
     }
+    return space;
+}
 
-    return {
-        width,
-        height
+function getFallbackMeasurement(container) {
+    return computeAvailableViewportSpace(container) || {
+        width: MIN_MEASURE_WIDTH,
+        height: MIN_MEASURE_HEIGHT
     };
 }
 
-function getFallbackMeasurement() {
-    const fallbackWidth = Math.max(
-        MIN_MEASURE_WIDTH,
-        (window.innerWidth || document.documentElement.clientWidth || 1280) - 48
-    );
-    const fallbackHeight = Math.max(
-        MIN_MEASURE_HEIGHT,
-        (window.innerHeight || document.documentElement.clientHeight || 720) - 64
-    );
+function computeAvailableViewportSpace(container) {
+    if (!container) {
+        return null;
+    }
+
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 960;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 720;
+
+    const headerEl = document.querySelector('.app-header');
+    const headerHeight = headerEl ? Math.ceil(headerEl.getBoundingClientRect().height) : 0;
+
+    const mainEl = container.closest('main');
+    const mainStyles = mainEl ? window.getComputedStyle(mainEl) : null;
+
+    const mainPaddingTop = mainStyles ? parseFloat(mainStyles.paddingTop) || 0 : 0;
+    const mainPaddingBottom = mainStyles ? parseFloat(mainStyles.paddingBottom) || 0 : 0;
+    const mainPaddingLeft = mainStyles ? parseFloat(mainStyles.paddingLeft) || 0 : 0;
+    const mainPaddingRight = mainStyles ? parseFloat(mainStyles.paddingRight) || 0 : 0;
+
+    const containerStyles = window.getComputedStyle(container);
+    const containerPaddingTop = parseFloat(containerStyles.paddingTop) || 0;
+    const containerPaddingBottom = parseFloat(containerStyles.paddingBottom) || 0;
+    const containerPaddingLeft = parseFloat(containerStyles.paddingLeft) || 0;
+    const containerPaddingRight = parseFloat(containerStyles.paddingRight) || 0;
+
+    const availableWidth =
+        viewportWidth - mainPaddingLeft - mainPaddingRight - containerPaddingLeft - containerPaddingRight;
+    const availableHeight =
+        viewportHeight - headerHeight - mainPaddingTop - mainPaddingBottom - containerPaddingTop - containerPaddingBottom;
+
     return {
-        width: fallbackWidth,
-        height: fallbackHeight
+        width: Math.max(availableWidth, MIN_MEASURE_WIDTH),
+        height: Math.max(availableHeight, MIN_MEASURE_HEIGHT)
     };
 }
 
 function applyInitialLayout(container, modules, measurement) {
     containerBaseWidth = measurement.width;
     containerBaseHeight = measurement.height;
+
+    container.style.width = `${containerBaseWidth}px`;
+    container.style.minWidth = `${containerBaseWidth}px`;
+    container.style.height = `${containerBaseHeight}px`;
+    container.style.minHeight = `${containerBaseHeight}px`;
 
     const gridWidth = Math.max(Math.floor(containerBaseWidth / GRID_SIZE), MIN_GRID_W * 3);
     const gridHeight = Math.max(Math.floor(containerBaseHeight / GRID_SIZE), MIN_GRID_H * 4);
@@ -407,27 +436,31 @@ document.addEventListener('DOMContentLoaded', initModuleGrid);
 export { initModuleGrid };
 
 function calculateResponsiveDefaults(gridWidth, gridHeight) {
-    const gap = 1;
-    const effectiveWidth = Math.max(gridWidth, MIN_GRID_W * 4);
-    const effectiveHeight = Math.max(gridHeight, MIN_GRID_H * 5);
+    const effectiveWidth = gridWidth;
+    const effectiveHeight = gridHeight;
 
-    const sideWidth = Math.max(MIN_GRID_W, Math.round(effectiveWidth * 0.25));
-    const mainWidth = Math.max(MIN_GRID_W, effectiveWidth - sideWidth - gap);
+    const sideWidth = clamp(
+        Math.round(effectiveWidth * 0.24),
+        MIN_GRID_W,
+        effectiveWidth - MIN_GRID_W
+    );
+    const mainWidth = effectiveWidth - sideWidth;
 
     const mapHeight = clamp(
-        Math.round(effectiveHeight * 0.58),
-        MIN_GRID_H * 2,
-        effectiveHeight - (MIN_GRID_H * 2 + gap)
-    );
-    const intelHeight = clamp(
-        Math.round(effectiveHeight * 0.18),
+        Math.round(effectiveHeight * 0.6),
         MIN_GRID_H,
-        effectiveHeight - MIN_GRID_H - gap
+        effectiveHeight - MIN_GRID_H
     );
-    const signaturesHeight = Math.max(MIN_GRID_H, effectiveHeight - intelHeight - gap);
-    const bookmarksHeight = Math.max(MIN_GRID_H, effectiveHeight - mapHeight - gap);
+    const bookmarksHeight = effectiveHeight - mapHeight;
 
-    const defaults = {
+    const intelHeight = clamp(
+        Math.round(effectiveHeight * 0.24),
+        MIN_GRID_H,
+        effectiveHeight - MIN_GRID_H
+    );
+    const signaturesHeight = effectiveHeight - intelHeight;
+
+    return {
         map: {
             x: 0,
             y: 0,
@@ -436,24 +469,21 @@ function calculateResponsiveDefaults(gridWidth, gridHeight) {
         },
         bookmarks: {
             x: 0,
-            y: mapHeight + gap,
+            y: mapHeight,
             w: mainWidth,
             h: bookmarksHeight
         },
         signatures: {
-            x: mainWidth + gap,
+            x: mainWidth,
             y: 0,
             w: sideWidth,
             h: signaturesHeight
         },
         intel: {
-            x: mainWidth + gap,
-            y: signaturesHeight + gap,
+            x: mainWidth,
+            y: signaturesHeight,
             w: sideWidth,
             h: intelHeight
         }
     };
-
-    return defaults;
 }
-

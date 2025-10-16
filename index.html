@@ -20,22 +20,23 @@
             <p class="loader-text">Initializing layout…</p>
         </div>
     </div>
-    <header>
-        <h1 id="title">setHacked Bookmark Viewer</h1>
-        <div id="timestampDisplay" class="timestamp-display center-text">Data Timestamp: </div> <!-- Added center-text class -->
-    </header>
-
-    <main>
-        <section class="button-container">
+    <header class="app-header">
+        <div class="header-brand">
+            <h1 id="title">setHacked Bookmark Viewer</h1>
+            <div id="timestampDisplay" class="timestamp-display">Data Timestamp: </div>
+        </div>
+        <div class="header-controls">
             <button id="readClipboardButton" aria-label="Read data from the clipboard">Read Clipboard</button>
             <button id="prevVersionButton" aria-label="Load the previous version">Previous Version</button>
             <button id="nextVersionButton" aria-label="Load the next version">Next Version</button>
             <button id="clearDBButton" aria-label="Clear all stored data">Clear Data</button>
-            <button id="helpButton" aria-label="Help">Help</button> <!-- Added help button -->
+            <button id="helpButton" aria-label="Help">Help</button>
             <button id="discordButton" aria-label="Join the discord">Join Discord</button>
-            <div id="errorContainer" class="error-message" aria-label="Error message"></div> <!-- Moved error container here -->
-        </section>
+        </div>
+        <div id="errorContainer" class="error-message" aria-label="Error message"></div>
+    </header>
 
+    <main>
         <section id="moduleGrid" class="module-grid" aria-label="Workspace modules">
             <article class="module" data-module-id="map" data-grid-w="6" data-grid-h="4">
                 <header class="module-header">
