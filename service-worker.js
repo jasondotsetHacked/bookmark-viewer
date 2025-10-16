@@ -17,7 +17,7 @@ const ASSET_PATHS = [
     'data/systems.json',
     'assets/icons/icon-192x192.png',
     'assets/icons/icon-512x512.png',
-    'assets/video/help.mp4'
+    'assets/images/help.png'
 ];
 
 self.addEventListener('install', event => {
