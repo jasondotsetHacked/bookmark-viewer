@@ -1408,6 +1408,14 @@ export function displayMap(data, options = {}) {
     svg.call(zoom.transform, currentTransform);
     g.selectAll('.crosshair').remove();
 
+    const activeSelection = window.__bookmarkViewerSelectedSystem;
+    if (activeSelection) {
+      const activeNode = findNodeByQuery(activeSelection);
+      if (activeNode) {
+        updateCrosshair(activeNode, classColors);
+      }
+    }
+
     return true;
   };
 

@@ -24,15 +24,33 @@ async function readClipboardAndDisplayTable() {
         const timestamp = new Date().toISOString();
         await db.add('versions', { timestamp, data: parsedData });
 
-        const preservedSelection =
-            window.__bookmarkViewerSelectedSystem ||
-            (typeof window.getCurrentTableFilter === 'function' ? window.getCurrentTableFilter() : null);
-        if (preservedSelection && !window.__bookmarkViewerSelectedSystem) {
-            window.__bookmarkViewerSelectedSystem = preservedSelection;
-        }
+        const preservedSelectionCandidates = [
+            window.__bookmarkViewerSelectedSystem,
+            typeof window.getMapSelectedSystem === 'function' ? window.getMapSelectedSystem() : null,
+            typeof window.getCurrentTableFilter === 'function' ? window.getCurrentTableFilter() : null
+        ];
+        const preservedSelection = preservedSelectionCandidates.find((candidate) => {
+            return typeof candidate === 'string' && candidate.trim().length > 0;
+        }) || null;
+        const normalizedSelection = preservedSelection ? preservedSelection.trim() : null;
+        const matchingSelectionRow = normalizedSelection
+            ? parsedData.find((row) => {
+                if (!row || row['SOL'] === undefined || row['SOL'] === null) {
+                    return false;
+                }
+                const systemName = row['SOL'].toString().trim();
+                return systemName.toLowerCase() === normalizedSelection.toLowerCase();
+            })
+            : null;
+        const selectionToRestore = matchingSelectionRow
+            ? matchingSelectionRow['SOL'].toString().trim()
+            : null;
 
-        displayTable(keys, parsedData);
-        displayMap(parsedData, { preserveSelection: true });
+        window.__bookmarkViewerSelectedSystem = selectionToRestore || null;
+
+        displayTable(keys, parsedData, selectionToRestore);
+        displayMap(parsedData, { preserveSelection: Boolean(selectionToRestore) });
+
         updateTimestampDisplay(timestamp);
         displayErrorMessage(''); // Clear any previous error message
     } catch (error) {
