@@ -49,7 +49,7 @@ export async function buildSystemTag(selection) {
         const primaryLabel = nickname ? `${baseLabel} (${nickname})` : baseLabel;
         labels.push({ text: primaryLabel, color: classColor });
 
-        if (systemInfo && systemInfo.statics) {
+        if (systemInfo && systemInfo.statics && !d.isPlaceholder) {
             Object.entries(systemInfo.statics).forEach(([staticName, staticInfo]) => {
                 const staticColor = classColors[staticInfo.class.toUpperCase()] || '#00ff00';
                 labels.push({ text: staticName, color: staticColor });

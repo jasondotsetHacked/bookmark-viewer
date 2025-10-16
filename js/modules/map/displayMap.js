@@ -117,7 +117,8 @@ export function displayMap(data) {
   searchToggle.title = 'Search systems';
   searchToggle.innerHTML = `
     <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-      <path d="M10.5 3a7.5 7.5 0 015.93 12.15l3.36 3.36a1 1 0 01-1.42 1.41l-3.35-3.35A7.5 7.5 0 1110.5 3zm0 2a5.5 5.5 0 100 11 5.5 5.5 0 000-11z" fill="currentColor"/>
+      <circle cx="11" cy="11" r="8" stroke="currentColor" fill="none" stroke-width="2"/>
+      <path d="m21 21-4.35-4.35" stroke="currentColor" stroke-width="2"/>
     </svg>
   `;
 
@@ -650,6 +651,10 @@ export function displayMap(data) {
   runtimeState.simulation = simulation;
   runtimeState.nodes = nodes;
   mapContainer.__mapRuntime = runtimeState;
+
+  if (hasPreviousLayout) {
+    lockNodes(simulation, nodes);
+  }
 
   const updateViewportSize = (nextWidth, nextHeight) => {
     if (!nextWidth || !nextHeight) {
