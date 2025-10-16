@@ -656,6 +656,48 @@ video {
     color: #ff6b6b;
 }
 
+.signature-table {
+    border-collapse: collapse;
+}
+
+.signature-table th,
+.signature-table td {
+    padding: 4px 6px;
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid rgba(0, 255, 0, 0.1);
+}
+
+.signature-table tbody tr {
+    transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.signature-table tbody tr.signature-wormhole:hover {
+    background-color: rgba(0, 255, 0, 0.08);
+}
+
+.signature-table tbody tr.signature-wormhole {
+    box-shadow: inset 3px 0 0 rgba(0, 200, 255, 0.4);
+}
+
+.signature-row-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+}
+
+.signature-actions-cell {
+    white-space: nowrap;
+    width: 1%;
+}
+
+.signature-row-actions button {
+    padding: 2px 6px;
+    font-size: 0.7rem;
+    line-height: 1.2;
+}
+
 .intel-module {
     display: flex;
     flex-direction: column;

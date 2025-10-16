@@ -85,6 +85,10 @@ function extractWormholeClass(rawLabel) {
     if (!normalizedToken) {
       continue;
     }
+    const detailedClassMatch = normalizedToken.match(/^([A-Z]{1,2}\d{1,3})/);
+    if (detailedClassMatch && detailedClassMatch[1]) {
+      return detailedClassMatch[1];
+    }
     for (let prefixIndex = 0; prefixIndex < WORMHOLE_CLASS_PREFIXES.length; prefixIndex += 1) {
       const prefix = WORMHOLE_CLASS_PREFIXES[prefixIndex];
       if (normalizedToken.startsWith(prefix)) {
@@ -271,7 +275,24 @@ export function displayMap(data) {
     "PV": "#FF9800"
   };
 
+  const systemsWithBookmarks = new Set();
+
   data.forEach((row) => {
+    const systemName = (row && row['SOL'] !== undefined && row['SOL'] !== null)
+      ? row['SOL'].toString().trim()
+      : '';
+    if (systemName) {
+      systemsWithBookmarks.add(systemName);
+      if (!systems[systemName]) {
+        systems[systemName] = {
+          name: systemName,
+          displayName: systemName,
+          filterKey: systemName,
+          originSystem: systemName
+        };
+      }
+    }
+
     const rawLabel = (row && row['Label'] !== undefined && row['Label'] !== null)
       ? row['Label'].toString()
       : '';
@@ -421,7 +442,9 @@ export function displayMap(data) {
     }
   });
 
-  const nodes = Object.values(systems).filter((node) => connectedSystemNames.has(node.name));
+  const nodes = Object.values(systems).filter((node) => (
+    systemsWithBookmarks.has(node.name) || connectedSystemNames.has(node.name)
+  ));
   const links = connections.filter((connection) => (
     connectedSystemNames.has(connection.source) && connectedSystemNames.has(connection.target)
   ));
