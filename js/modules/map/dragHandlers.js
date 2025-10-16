@@ -12,13 +12,15 @@ export function dragStarted(event, d, simulation) {
     if (!event.active) simulation.alphaTarget(0.3).restart();
     d.fx = d.x;
     d.fy = d.y;
-    filterBookmarksBySystem(d.name); // Filter bookmarks when dragging starts
+    const systemKey = d.filterKey || d.name;
+    filterBookmarksBySystem(systemKey); // Filter bookmarks when dragging starts
 }
 
 export function dragged(event, d) {
     d.fx = event.x;
     d.fy = event.y;
-    filterBookmarksBySystem(d.name); // Filter bookmarks while dragging
+    const systemKey = d.filterKey || d.name;
+    filterBookmarksBySystem(systemKey); // Filter bookmarks while dragging
 }
 
 export function dragEnded(event, d, simulation) {

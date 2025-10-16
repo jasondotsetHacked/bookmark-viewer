@@ -19,7 +19,9 @@ export async function buildSystemTag(selection) {
 
     selection.each(function(d) {
         const g = d3.select(this);
-        const systemInfo = systemsData[d.name];
+        const lookupKey = d.name;
+        const fallbackKey = d.filterKey || d.originSystem;
+        const systemInfo = systemsData[lookupKey] || (fallbackKey ? systemsData[fallbackKey] : undefined);
         let wormholeClass = systemInfo ? systemInfo.wormholeClass : null;
         let classColor = wormholeClass ? classColors[wormholeClass.toUpperCase()] : null;
 
@@ -35,9 +37,11 @@ export async function buildSystemTag(selection) {
             classColor = classColors[wormholeClass];
         }
 
-        const nickname = typeof window.getSystemNickname === 'function' ? window.getSystemNickname(d.name) : '';
+        const nicknameKey = d.filterKey || d.name;
+        const nickname = typeof window.getSystemNickname === 'function' ? window.getSystemNickname(nicknameKey) : '';
+        const displayName = d.displayName || d.name;
         const classPart = wormholeClass ? `${wormholeClass.toUpperCase()} ` : '';
-        const baseLabel = `${classPart}${d.name}`;
+        const baseLabel = `${classPart}${displayName}`;
         d._baseLabel = baseLabel;
         d.nickname = nickname;
 
@@ -81,7 +85,7 @@ export async function buildSystemTag(selection) {
         });
 
         function selectSystem() {
-            const systemName = d.name;
+            const systemName = d.filterKey || d.name;
             console.log(`System ${systemName} selected`);
             filterBookmarksBySystem(systemName);
         }

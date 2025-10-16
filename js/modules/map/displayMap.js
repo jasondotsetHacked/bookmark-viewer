@@ -2,6 +2,58 @@ import { extractSystems } from './extractSystems.js';
 import { buildSystemTag } from './buildSystemTag.js';
 import { lockNodes, unlockNodes, dragStarted, dragged, dragEnded } from './dragHandlers.js';
 
+const PLACEHOLDER_PATTERN = /^\?+$/;
+const PLACEHOLDER_KEY_COLUMNS = ['Label', 'Type', 'SOL', 'CON', 'REG', 'Date', 'Expiry', 'Creator', 'Jumps'];
+
+function buildPlaceholderKey(systemFrom, placeholder, row) {
+  const parts = [systemFrom || '', placeholder || ''];
+  PLACEHOLDER_KEY_COLUMNS.forEach((column) => {
+    const raw = row && Object.prototype.hasOwnProperty.call(row, column) ? row[column] : '';
+    let value = raw === undefined || raw === null ? '' : raw;
+    if (typeof value !== 'string') {
+      value = String(value);
+    }
+    parts.push(value.trim ? value.trim() : value);
+  });
+  return parts.join('|');
+}
+
+function stableHash(input) {
+  if (!input) {
+    return '0';
+  }
+  let hash = 0;
+  for (let index = 0; index < input.length; index += 1) {
+    const charCode = input.charCodeAt(index);
+    hash = ((hash << 5) - hash) + charCode;
+    hash |= 0; // Convert to 32-bit integer
+  }
+  const normalized = Math.abs(hash).toString(36);
+  return normalized || '0';
+}
+
+function createPlaceholderIdentifier(systemFrom, placeholder, row, cache) {
+  const cacheKey = buildPlaceholderKey(systemFrom, placeholder, row);
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const hash = stableHash(cacheKey);
+  const suffix = (hash.length >= 6 ? hash.slice(0, 6) : hash.padEnd(6, '0')).toUpperCase();
+  const id = `${systemFrom}::UNKNOWN::${suffix}`;
+  const entry = {
+    id,
+    displayName: placeholder || '???',
+    filterKey: systemFrom,
+    isPlaceholder: true,
+    originSystem: systemFrom,
+    hash,
+    cacheKey
+  };
+  cache.set(cacheKey, entry);
+  return entry;
+}
+
 /**
  * Displays the map with the given data.
  * @param {Array<Object>} data The data to display on the map.
@@ -9,6 +61,49 @@ import { lockNodes, unlockNodes, dragStarted, dragged, dragEnded } from './dragH
 export function displayMap(data) {
   console.log('displayMap called with data:', data);
   const mapContainer = document.getElementById('mapContainer');
+  if (!mapContainer) {
+    console.warn('displayMap: mapContainer not found');
+    return;
+  }
+
+  const previousRuntime = mapContainer.__mapRuntime || null;
+  let previousPositions = new Map();
+  let previousTransform = null;
+
+  if (previousRuntime) {
+    try {
+      const prevSimulation = previousRuntime.simulation;
+      if (prevSimulation && typeof prevSimulation.stop === 'function') {
+        prevSimulation.stop();
+      }
+      const prevNodes = typeof prevSimulation?.nodes === 'function'
+        ? prevSimulation.nodes()
+        : Array.isArray(previousRuntime.nodes)
+          ? previousRuntime.nodes
+          : [];
+      previousPositions = new Map(
+        prevNodes
+          .filter((node) => node && typeof node.name === 'string')
+          .map((node) => [node.name, {
+            x: node.x,
+            y: node.y,
+            vx: node.vx,
+            vy: node.vy,
+            fx: node.fx,
+            fy: node.fy
+          }])
+      );
+      if (previousRuntime.currentTransform) {
+        previousTransform = previousRuntime.currentTransform;
+      }
+    } catch (error) {
+      console.warn('displayMap: failed to capture previous runtime state', error);
+      previousPositions = new Map();
+      previousTransform = null;
+    }
+  }
+
+  mapContainer.__mapRuntime = null;
   mapContainer.innerHTML = '';
 
   const searchControls = document.createElement('div');
@@ -94,9 +189,16 @@ export function displayMap(data) {
   const systems = {};
   const connections = [];
   const statuses = {};
+  const placeholderCache = new Map();
 
-  const getStatusColor = (systemName) => {
-    const status = statuses[systemName];
+  const getStatusColor = (nodeOrName) => {
+    let statusKey = null;
+    if (typeof nodeOrName === 'string') {
+      statusKey = nodeOrName;
+    } else if (nodeOrName && typeof nodeOrName === 'object') {
+      statusKey = nodeOrName.filterKey || nodeOrName.originSystem || nodeOrName.name;
+    }
+    const status = statusKey ? statuses[statusKey] : undefined;
     if (status === '@FRIENDLY') return '#00ff00';
     if (status === '@HOLD') return '#ffeb3b';
     if (status === '@DANGER') return '#ff0000';
@@ -126,28 +228,62 @@ export function displayMap(data) {
   };
 
   data.forEach((row) => {
-    if (row['Label'].startsWith('-')) {
-      const [systemFrom, systemTo] = extractSystems(row['Label'], row['SOL']);
-      if (systemFrom && systemTo) {
-        const isEOL = row['Label'].includes('EOL');
-        const isCRIT = row['Label'].includes('CRIT');
+    const rawLabel = (row && row['Label'] !== undefined && row['Label'] !== null)
+      ? row['Label'].toString()
+      : '';
+    if (!rawLabel) {
+      return;
+    }
+
+    if (rawLabel.startsWith('-')) {
+      const [systemFrom, systemToRaw] = extractSystems(rawLabel, row['SOL']);
+      if (systemFrom && systemToRaw) {
+        const targetInfo = PLACEHOLDER_PATTERN.test(systemToRaw)
+          ? createPlaceholderIdentifier(systemFrom, systemToRaw, row, placeholderCache)
+          : {
+            id: systemToRaw,
+            displayName: systemToRaw,
+            filterKey: systemToRaw,
+            isPlaceholder: false,
+            originSystem: systemToRaw
+          };
+
+        const systemTo = targetInfo.id;
+        const isEOL = rawLabel.includes('EOL');
+        const isCRIT = rawLabel.includes('CRIT');
         const existingConnection = connections.find((conn) =>
           (conn.source === systemFrom && conn.target === systemTo) ||
           (conn.source === systemTo && conn.target === systemFrom)
         );
+
         if (existingConnection) {
           existingConnection.isEOL = existingConnection.isEOL || isEOL;
           existingConnection.isCRIT = existingConnection.isCRIT || isCRIT;
         } else {
           connections.push({ source: systemFrom, target: systemTo, isEOL, isCRIT });
         }
-        systems[systemFrom] = { name: systemFrom, label: row['Label'] };
-        systems[systemTo] = { name: systemTo, label: row['Label'] };
+
+        const sourceEntry = systems[systemFrom] || { name: systemFrom };
+        sourceEntry.label = rawLabel;
+        sourceEntry.filterKey = systemFrom;
+        sourceEntry.displayName = sourceEntry.displayName || systemFrom;
+        sourceEntry.originSystem = sourceEntry.originSystem || systemFrom;
+        systems[systemFrom] = sourceEntry;
+
+        const targetEntry = systems[systemTo] || { name: systemTo };
+        targetEntry.label = rawLabel;
+        targetEntry.displayName = targetInfo.displayName || systemTo;
+        targetEntry.filterKey = targetInfo.filterKey || systemTo;
+        targetEntry.isPlaceholder = targetInfo.isPlaceholder || false;
+        targetEntry.originSystem = targetInfo.originSystem || systemTo;
+        systems[systemTo] = targetEntry;
       }
-    } else if (row['Label'].startsWith('@')) {
-      const system = row['SOL'].trim();
-      const status = row['Label'].split(' ')[0];
-      statuses[system] = status;
+    } else if (rawLabel.startsWith('@')) {
+      const system = (row['SOL'] || '').toString().trim();
+      const status = rawLabel.split(' ')[0];
+      if (system) {
+        statuses[system] = status;
+      }
     }
   });
 
@@ -157,6 +293,27 @@ export function displayMap(data) {
 
   const nodes = Object.values(systems);
   const links = connections;
+  const hasPreviousLayout = previousPositions.size > 0;
+  const nodesByName = new Map(nodes.map((node) => [node.name, node]));
+  const adjacency = new Map();
+
+  const addNeighbor = (from, to) => {
+    if (!from || !to) {
+      return;
+    }
+    let neighbors = adjacency.get(from);
+    if (!neighbors) {
+      neighbors = new Set();
+      adjacency.set(from, neighbors);
+    }
+    neighbors.add(to);
+  };
+
+  links.forEach((link) => {
+    addNeighbor(link.source, link.target);
+    addNeighbor(link.target, link.source);
+  });
+
   const containerRect = mapContainer.getBoundingClientRect();
   let width = Math.max(containerRect.width || 0, mapContainer.clientWidth, mapContainer.offsetWidth || 0);
   let height = Math.max(containerRect.height || 0, mapContainer.clientHeight, mapContainer.offsetHeight || 0);
@@ -168,42 +325,88 @@ export function displayMap(data) {
     height = 600;
   }
 
-  // Group nodes into chains
-  const chains = [];
-  const visited = new Set();
+  if (!hasPreviousLayout) {
+    // Group nodes into chains
+    const chains = [];
+    const visited = new Set();
 
-  nodes.forEach(node => {
-    if (!visited.has(node.name)) {
-      const chain = [];
-      const stack = [node];
-      while (stack.length > 0) {
-        const current = stack.pop();
-        if (!visited.has(current.name)) {
-          visited.add(current.name);
-          chain.push(current);
-          links.forEach(link => {
-            if (link.source === current.name && !visited.has(link.target)) {
-              stack.push(systems[link.target]);
-            } else if (link.target === current.name && !visited.has(link.source)) {
-              stack.push(systems[link.source]);
-            }
-          });
+    nodes.forEach(node => {
+      if (!visited.has(node.name)) {
+        const chain = [];
+        const stack = [node];
+        while (stack.length > 0) {
+          const current = stack.pop();
+          if (!visited.has(current.name)) {
+            visited.add(current.name);
+            chain.push(current);
+            links.forEach(link => {
+              if (link.source === current.name && !visited.has(link.target)) {
+                stack.push(systems[link.target]);
+              } else if (link.target === current.name && !visited.has(link.source)) {
+                stack.push(systems[link.source]);
+              }
+            });
+          }
         }
+        chains.push(chain);
       }
-      chains.push(chain);
-    }
-  });
-
-  // Position chains further apart
-  const chainSpacing = 200;
-  chains.forEach((chain, index) => {
-    const angle = (index / chains.length) * 2 * Math.PI;
-    const centerX = width / 2 + Math.cos(angle) * chainSpacing * index;
-    const centerY = height / 2 + Math.sin(angle) * chainSpacing * index;
-    chain.forEach((node, nodeIndex) => {
-      node.x = centerX + Math.cos(angle + nodeIndex) * 50;
-      node.y = centerY + Math.sin(angle + nodeIndex) * 50;
     });
+
+    // Position chains further apart
+    const chainSpacing = 200;
+    chains.forEach((chain, index) => {
+      const angle = (index / chains.length) * 2 * Math.PI;
+      const centerX = width / 2 + Math.cos(angle) * chainSpacing * index;
+      const centerY = height / 2 + Math.sin(angle) * chainSpacing * index;
+      chain.forEach((node, nodeIndex) => {
+        node.x = centerX + Math.cos(angle + nodeIndex) * 50;
+        node.y = centerY + Math.sin(angle + nodeIndex) * 50;
+      });
+    });
+  }
+
+  const randomOffset = () => (Math.random() - 0.5) * 40;
+
+  nodes.forEach((node) => {
+    const saved = previousPositions.get(node.name);
+    if (saved) {
+      node.x = saved.x;
+      node.y = saved.y;
+      node.vx = saved.vx;
+      node.vy = saved.vy;
+      node.fx = saved.fx;
+      node.fy = saved.fy;
+      return;
+    }
+
+    if (!hasPreviousLayout) {
+      return;
+    }
+
+    const neighborNames = adjacency.get(node.name);
+    if (neighborNames && neighborNames.size > 0) {
+      const neighborPositions = Array.from(neighborNames)
+        .map((neighbor) => {
+          const position = previousPositions.get(neighbor);
+          if (position) {
+            return position;
+          }
+          const neighborNode = nodesByName.get(neighbor);
+          return neighborNode ? { x: neighborNode.x, y: neighborNode.y } : null;
+        })
+        .filter(Boolean);
+
+      if (neighborPositions.length > 0) {
+        const avgX = neighborPositions.reduce((sum, pos) => sum + (Number.isFinite(pos.x) ? pos.x : width / 2), 0) / neighborPositions.length;
+        const avgY = neighborPositions.reduce((sum, pos) => sum + (Number.isFinite(pos.y) ? pos.y : height / 2), 0) / neighborPositions.length;
+        node.x = avgX + randomOffset();
+        node.y = avgY + randomOffset();
+        return;
+      }
+    }
+
+    node.x = (width / 2) + randomOffset();
+    node.y = (height / 2) + randomOffset();
   });
 
   console.log('mapContainer dimensions:', width, height);
@@ -217,19 +420,26 @@ export function displayMap(data) {
 
   const g = svg.append('g');
 
-  let currentTransform = d3.zoomIdentity;
+  let currentTransform = previousTransform || d3.zoomIdentity;
+
+  const runtimeState = {
+    simulation: null,
+    nodes,
+    currentTransform
+  };
 
   const zoom = d3.zoom()
     .scaleExtent([0.1, 10])
     .on('zoom', (event) => {
       currentTransform = event.transform;
+      runtimeState.currentTransform = currentTransform;
       g.attr('transform', currentTransform);
     });
 
   const resetNodeStyles = () => {
     node
-      .attr('fill', (d) => getStatusColor(d.name))
-      .attr('stroke', (d) => getStatusColor(d.name));
+      .attr('fill', (d) => getStatusColor(d))
+      .attr('stroke', (d) => getStatusColor(d));
   };
 
   function setSearchMessage(text = '', tone = 'info') {
@@ -289,7 +499,14 @@ export function displayMap(data) {
     if (!query) {
       return null;
     }
-    return nodes.find((nodeEntry) => nodeEntry.name.toLowerCase() === query) || null;
+    return nodes.find((nodeEntry) => {
+      if (!nodeEntry) {
+        return false;
+      }
+      const nameMatch = typeof nodeEntry.name === 'string' && nodeEntry.name.toLowerCase() === query;
+      const displayMatch = typeof nodeEntry.displayName === 'string' && nodeEntry.displayName.toLowerCase() === query;
+      return nameMatch || displayMatch;
+    }) || null;
   }
 
   function applySystemSelection(target) {
@@ -308,15 +525,16 @@ export function displayMap(data) {
     resetNodeStyles();
     updateCrosshair(targetNode, classColors);
 
+    const selectionKey = targetNode.filterKey || targetNode.name;
     const keys = ['Label', 'Type', 'Jumps', 'SOL', 'CON', 'REG', 'Date', 'Expiry', 'Creator'];
-    displayTable(keys, data, targetNode.name);
+    displayTable(keys, data, selectionKey);
     lockNodes(simulation, nodes);
 
     if (typeof window.setSignatureActiveSystem === 'function') {
-      window.setSignatureActiveSystem(targetNode.name);
+      window.setSignatureActiveSystem(selectionKey);
     }
     if (typeof window.setSystemIntelActiveSystem === 'function') {
-      window.setSystemIntelActiveSystem(targetNode.name);
+      window.setSystemIntelActiveSystem(selectionKey);
     }
 
     closeSearchPanel();
@@ -383,6 +601,10 @@ export function displayMap(data) {
   }
 
   svg.call(zoom);
+  if (currentTransform) {
+    g.attr('transform', currentTransform);
+    svg.call(zoom.transform, currentTransform);
+  }
 
   const zoomRect = g.append('rect')
     .attr('class', 'zoom-rect')
@@ -420,6 +642,14 @@ export function displayMap(data) {
     .force('center', d3.forceCenter(width / 2, height / 2))
     .force('collide', d3.forceCollide(50))
     .on('tick', ticked);
+
+  if (hasPreviousLayout) {
+    simulation.alpha(0.35);
+  }
+
+  runtimeState.simulation = simulation;
+  runtimeState.nodes = nodes;
+  mapContainer.__mapRuntime = runtimeState;
 
   const updateViewportSize = (nextWidth, nextHeight) => {
     if (!nextWidth || !nextHeight) {
@@ -520,8 +750,8 @@ export function displayMap(data) {
     .data(nodes)
     .enter().append('circle')
     .attr('r', 10)
-    .attr('fill', (d) => getStatusColor(d.name))
-    .attr('stroke', (d) => getStatusColor(d.name))
+    .attr('fill', (d) => getStatusColor(d))
+    .attr('stroke', (d) => getStatusColor(d))
     .attr('stroke-width', 1.5)
     .call(d3.drag()
       .on('start', (event, d) => {
@@ -611,7 +841,7 @@ export function displayMap(data) {
   }
 
   function updateCrosshair(d, classColors) {
-    const systemInfo = systems[d.name];
+    const systemInfo = systems[d.name] || (d.filterKey ? systems[d.filterKey] : null);
     const wormholeClass = systemInfo ? systemInfo.wormholeClass : null;
     const classColor = wormholeClass ? classColors[wormholeClass.toUpperCase()] : '#00ff00';
 
