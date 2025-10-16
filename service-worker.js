@@ -1,4 +1,4 @@
-const CACHE_NAME = 'bookmark-mapper-cache-v5';
+const CACHE_NAME = 'bookmark-mapper-cache-v6';
 const ASSET_PATHS = [
     '.',
     'index.html',
