@@ -35,8 +35,15 @@ export async function buildSystemTag(selection) {
             classColor = classColors[wormholeClass];
         }
 
+        const nickname = typeof window.getSystemNickname === 'function' ? window.getSystemNickname(d.name) : '';
+        const classPart = wormholeClass ? `${wormholeClass.toUpperCase()} ` : '';
+        const baseLabel = `${classPart}${d.name}`;
+        d._baseLabel = baseLabel;
+        d.nickname = nickname;
+
         const labels = [];
-        labels.push({ text: `${wormholeClass ? wormholeClass.toUpperCase() : ''} ${d.name}`, color: classColor });
+        const primaryLabel = nickname ? `${baseLabel} (${nickname})` : baseLabel;
+        labels.push({ text: primaryLabel, color: classColor });
 
         if (systemInfo && systemInfo.statics) {
             Object.entries(systemInfo.statics).forEach(([staticName, staticInfo]) => {
@@ -46,8 +53,9 @@ export async function buildSystemTag(selection) {
         }
 
         labels.forEach((label, index) => {
+            const textClass = index === 0 ? "label label-primary" : "label";
             const text = g.append("text")
-                .attr("class", "label")
+                .attr("class", textClass)
                 .attr("fill", label.color || '#00ff00')
                 .attr("font-size", index === 0 ? "12px" : "9.6px") // Scale down statics labels by 20%
                 .attr("text-anchor", "middle")
@@ -60,8 +68,9 @@ export async function buildSystemTag(selection) {
 
             const bbox = text.node().getBBox();
 
+            const rectClass = index === 0 ? "label-rect label-rect-primary" : "label-rect";
             g.insert("rect", "text")
-                .attr("class", "label-rect")
+                .attr("class", rectClass)
                 .attr("fill", label.color || '#121212')
                 .attr("stroke", label.color || '#00ff00')
                 .attr("stroke-width", 1)

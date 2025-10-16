@@ -26,7 +26,6 @@
             <div id="timestampDisplay" class="timestamp-display">Data Timestamp: </div>
         </div>
         <div class="header-controls">
-            <button id="readClipboardButton" aria-label="Read data from the clipboard">Read Clipboard</button>
             <button id="prevVersionButton" aria-label="Load the previous version">Previous Version</button>
             <button id="nextVersionButton" aria-label="Load the next version">Next Version</button>
             <button id="clearDBButton" aria-label="Clear all stored data">Clear Data</button>
@@ -58,6 +57,7 @@
                         <span class="legend-item legend-stale">Stale bookmark</span>
                         <span class="legend-item legend-matched">Matched</span>
                     </div>
+                    <button id="readClipboardButton" aria-label="Read data from the clipboard">Read Clipboard</button>
                     <div id="tableContainer" class="module-scrollable" aria-label="Data table view"></div>
                 </div>
                 <div class="module-resize-handle" aria-hidden="true"></div>
@@ -90,6 +90,8 @@
                     <div class="module-status" id="intelActiveSystem">No system selected</div>
                 </header>
                 <div class="module-body intel-module">
+                    <label class="intel-nickname-label" for="intelNicknameInput">Nickname</label>
+                    <input id="intelNicknameInput" class="intel-nickname-input" type="text" placeholder="Set a nickname for this system..." disabled>
                     <textarea id="intelTextarea" class="intel-textarea" placeholder="Add intel for this system..." disabled></textarea>
                 </div>
                 <div class="module-resize-handle" aria-hidden="true"></div>
@@ -101,10 +103,7 @@
     <div id="helpModal" class="modal">
         <div class="modal-content">
             <span id="closeModal" class="close">&times;</span>
-            <video controls>
-                <source src="assets/video/help.mp4" type="video/mp4">
-                Your browser does not support the video tag.
-            </video>
+            <img src="assets/help.png" alt="Help instructions">
         </div>
     </div>
 

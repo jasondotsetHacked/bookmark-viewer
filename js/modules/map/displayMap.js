@@ -365,6 +365,27 @@ export function displayMap(data) {
     .enter().append('g')
     .call(buildSystemTag);
 
+  if (window.__bookmarkViewerNicknameListener) {
+    window.removeEventListener('systemNicknameUpdated', window.__bookmarkViewerNicknameListener);
+  }
+
+  const nicknameListener = (event) => {
+    if (!event || !event.detail) {
+      return;
+    }
+    const { system, nickname } = event.detail;
+    if (!system) {
+      return;
+    }
+    const matchingLabels = labels.filter((d) => d.name === system);
+    if (!matchingLabels.empty()) {
+      updateNicknameLabel(matchingLabels, nickname || '');
+    }
+  };
+
+  window.addEventListener('systemNicknameUpdated', nicknameListener);
+  window.__bookmarkViewerNicknameListener = nicknameListener;
+
   function ticked() {
     link
       .attr('x1', (d) => d.source.x)
@@ -412,6 +433,30 @@ export function displayMap(data) {
   // Lock nodes on any interaction
   svg.on('mousedown', () => lockNodes(simulation, nodes));
   svg.on('touchstart', () => lockNodes(simulation, nodes));
+}
+
+function updateNicknameLabel(labelSelection, nicknameValue) {
+  labelSelection.each(function (d) {
+    const g = d3.select(this);
+    const baseLabel = d._baseLabel || d.name;
+    const sanitizedNickname = nicknameValue ? nicknameValue.trim() : '';
+    d.nickname = sanitizedNickname;
+    const primaryText = sanitizedNickname ? `${baseLabel} (${sanitizedNickname})` : baseLabel;
+    const textSelection = g.select('text.label-primary');
+    const rectSelection = g.select('rect.label-rect-primary');
+
+    if (textSelection.empty() || rectSelection.empty()) {
+      return;
+    }
+
+    textSelection.text(primaryText);
+    const bbox = textSelection.node().getBBox();
+    rectSelection
+      .attr('x', bbox.x - 4)
+      .attr('y', bbox.y - 2)
+      .attr('width', bbox.width + 8)
+      .attr('height', bbox.height + 4);
+  });
 }
 
 function filterBookmarksBySystem(systemName) {
