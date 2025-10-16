@@ -13,8 +13,6 @@ const STATUS_LABELS = {
     matched: 'Matched'
 };
 
-const BOOKMARK_FLAG_TOKENS = new Set(['EOL', 'CRIT', 'HALF', 'STABLE']);
-
 let systemsDataPromise = null;
 let systemsDataCache = null;
 let wormholeTypeCache = null;
@@ -552,13 +550,12 @@ async function handleGenerateInBookmark(row) {
         await ensureSystemsData();
 
         const classCode = await resolveDestinationClassCode(showInfo);
-        const wormholeType = (showInfo.wormholeType || '').toUpperCase();
-        const sideCode = wormholeType === 'K162' ? 'i' : 'o';
         const sizeCode = resolveShipSizeCode(showInfo.sizeRaw);
+        const connectionCode = resolveInboundConnectionCode(showInfo);
         const destinationName = inferDestinationSystemName(showInfo, row);
         const flags = collectStabilityFlags(showInfo);
         const signatureToken = resolveSignaturePrefix(row.signature, row.signatureId);
-        const classSegment = buildClassSegment(classCode, sideCode, sizeCode);
+        const classSegment = buildClassSegment(classCode, connectionCode, sizeCode);
         const label = safeJoinTokens([`-${signatureToken}`, classSegment, destinationName, ...flags]);
         const copied = await writeTextToClipboard(label);
         showSignatureMessage(
@@ -590,7 +587,8 @@ async function handleGenerateOutBookmark(row) {
         const homeClass = (await resolveSystemClassCode(homeSystemName)) || '??';
         const sizeCode = resolveOutboundSizeCode(row);
         const flags = collectFlagsFromBookmarkLabel(extractBookmarkLabel(row));
-        const classSegment = buildClassSegment(homeClass, 'o', sizeCode);
+        const connectionCode = resolveOutboundConnectionCode(row);
+        const classSegment = buildClassSegment(homeClass, connectionCode, sizeCode);
         const label = safeJoinTokens(['--???', classSegment, homeSystemName, ...flags]);
         const copied = await writeTextToClipboard(label);
         showSignatureMessage(
@@ -619,6 +617,42 @@ function resolveOutboundSizeCode(row) {
     const label = extractBookmarkLabel(row);
     const inferred = inferSizeCodeFromBookmarkLabel(label);
     return inferred || '?';
+}
+
+function resolveInboundConnectionCode(showInfo) {
+    if (!showInfo) {
+        return 'r';
+    }
+    const wormholeType = (showInfo.wormholeType || '').toUpperCase();
+    if (wormholeType === 'K162') {
+        return 'i';
+    }
+    if (showInfo.isStatic) {
+        return 's';
+    }
+    return 'r';
+}
+
+function resolveOutboundConnectionCode(row) {
+    const label = extractBookmarkLabel(row);
+    const segment = extractClassSegmentFromLabel(label);
+    const parsed = parseClassSegment(segment);
+    if (parsed && parsed.connectionCode) {
+        const code = parsed.connectionCode.toLowerCase();
+        switch (code) {
+            case 'i':
+                return '?';
+            case 's':
+                return 'r';
+            case 'r':
+                return '?';
+            case '?':
+                return '?';
+            default:
+                return '?';
+        }
+    }
+    return '?';
 }
 
 function inferSizeCodeFromBookmarkLabel(label) {
@@ -651,11 +685,67 @@ function collectFlagsFromBookmarkLabel(label) {
     const flags = [];
     tokens.forEach((token) => {
         const upper = token.toUpperCase();
-        if ((upper === 'EOL' || upper === 'CRIT') && !flags.includes(upper)) {
+        if ((upper === 'VEOL' || upper === 'EOL' || upper === 'CRIT') && !flags.includes(upper)) {
             flags.push(upper);
         }
     });
     return flags;
+}
+
+function extractClassSegmentFromLabel(label) {
+    if (!label || typeof label !== 'string') {
+        return null;
+    }
+    const tokens = label.trim().split(/\s+/);
+    if (tokens.length < 2) {
+        return null;
+    }
+    return tokens[1];
+}
+
+function parseClassSegment(segment) {
+    if (!segment || typeof segment !== 'string') {
+        return {
+            classCode: null,
+            connectionCode: null,
+            sizeCode: null
+        };
+    }
+    const trimmed = segment.trim();
+    if (!trimmed) {
+        return {
+            classCode: null,
+            connectionCode: null,
+            sizeCode: null
+        };
+    }
+    const sizeMatch = trimmed.match(/(XL|F|D|S|M|L)$/i);
+    let sizeCode = null;
+    let base = trimmed;
+    if (sizeMatch && sizeMatch[1]) {
+        sizeCode = sizeMatch[1].toUpperCase();
+        base = trimmed.slice(0, trimmed.length - sizeMatch[1].length);
+    }
+    if (!base) {
+        return {
+            classCode: null,
+            connectionCode: null,
+            sizeCode
+        };
+    }
+    const connectionMatch = base.match(/([A-Za-z])$/);
+    let connectionCode = null;
+    let classCode = base;
+    if (connectionMatch && connectionMatch[1]) {
+        connectionCode = connectionMatch[1].toLowerCase();
+        classCode = base.slice(0, base.length - connectionMatch[1].length);
+    }
+    classCode = classCode ? classCode.toUpperCase() : null;
+    return {
+        classCode,
+        connectionCode,
+        sizeCode
+    };
 }
 
 async function ensureSystemsData() {
@@ -808,15 +898,17 @@ function parseWormholeShowInfo(rawText) {
         return null;
     }
     const header = lines[0];
-    const match = header.match(/Wormhole\s+([A-Z0-9-]+)/i);
+    const match = header.match(/Wormhole\s+([A-Z0-9-]+)(?:\s+([A-Za-z]))?/i);
     const wormholeType = match ? match[1].toUpperCase() : null;
+    const staticIndicator = match && match[2] ? match[2].toLowerCase() : null;
     const info = {
         wormholeType,
         destinationRaw: '',
         sizeRaw: '',
         lifetimeRaw: '',
         massRaw: '',
-        text: rawText
+        text: rawText,
+        isStatic: staticIndicator === 's'
     };
     lines.forEach((line) => {
         const lower = line.toLowerCase();
@@ -864,8 +956,9 @@ function resolveShipSizeCode(sizeRaw) {
 
 function collectStabilityFlags(showInfo) {
     const flags = new Set();
-    if (detectEndOfLife(showInfo?.lifetimeRaw)) {
-        flags.add('EOL');
+    const lifetimeFlag = resolveLifetimeFlag(showInfo?.lifetimeRaw);
+    if (lifetimeFlag) {
+        flags.add(lifetimeFlag);
     }
     if (detectCriticalMass(showInfo?.massRaw)) {
         flags.add('CRIT');
@@ -873,12 +966,18 @@ function collectStabilityFlags(showInfo) {
     return Array.from(flags);
 }
 
-function detectEndOfLife(lifetimeRaw) {
+function resolveLifetimeFlag(lifetimeRaw) {
     if (!lifetimeRaw) {
-        return false;
+        return null;
     }
     const normalized = lifetimeRaw.toLowerCase();
-    return normalized.includes('less than 1 hour') || normalized.includes('end of its natural lifetime');
+    if (normalized.includes('less than 1 hour')) {
+        return 'VEOL';
+    }
+    if (normalized.includes('end of its natural lifetime')) {
+        return 'EOL';
+    }
+    return null;
 }
 
 function detectCriticalMass(massRaw) {
@@ -890,65 +989,8 @@ function detectCriticalMass(massRaw) {
 }
 
 function inferDestinationSystemName(showInfo, row) {
-    const fromBookmark = extractSystemNameFromBookmarkLabel(row?.bookmarkLabel || row?.bookmark?.Label);
-    if (fromBookmark) {
-        return fromBookmark;
-    }
-    const fromDestination = extractSystemNameFromDestinationText(showInfo?.destinationRaw);
-    if (fromDestination) {
-        return fromDestination;
-    }
+    // Inbound bookmarks intentionally hide the remote destination details.
     return '???';
-}
-
-function extractSystemNameFromDestinationText(text) {
-    if (!text) {
-        return null;
-    }
-    const match = text.match(/(?:the\s+)?([A-Z][A-Za-z0-9-]{2,})\s+systems?/i);
-    if (match) {
-        const candidate = match[1];
-        if (candidate.toUpperCase() !== 'WORMHOLE') {
-            return candidate;
-        }
-    }
-    const specialSystems = ['Thera', 'Barbican', 'Conflux', 'Redoubt', 'Sentinel', 'Vidette'];
-    const upper = text.toUpperCase();
-    for (let index = 0; index < specialSystems.length; index += 1) {
-        const candidate = specialSystems[index];
-        if (upper.includes(candidate.toUpperCase())) {
-            return candidate;
-        }
-    }
-    return null;
-}
-
-function extractSystemNameFromBookmarkLabel(label) {
-    if (!label || typeof label !== 'string') {
-        return null;
-    }
-    const tokens = label.trim().split(/\s+/).filter(Boolean);
-    if (tokens.length < 2) {
-        return null;
-    }
-    for (let index = tokens.length - 1; index >= 0; index -= 1) {
-        const token = tokens[index];
-        const normalized = token.toUpperCase();
-        if (BOOKMARK_FLAG_TOKENS.has(normalized)) {
-            continue;
-        }
-        if (normalized === 'WORMHOLE') {
-            continue;
-        }
-        if (/^--?/.test(token)) {
-            continue;
-        }
-        if (/^(C\d+|HS|LS|NS)([IO][A-Z]*)?$/.test(normalized)) {
-            continue;
-        }
-        return token;
-    }
-    return null;
 }
 
 function resolveSignaturePrefix(signature, signatureId) {
@@ -1136,5 +1178,6 @@ window.setSignatureActiveSystem = setSignatureActiveSystem;
 window.rebuildSignatureMatches = runSignatureAnalysis;
 window.extractBookmarkPrefix = extractBookmarkPrefix;
 window.createBookmarkKeyFallback = localBookmarkKey;
+window.getSignatureActiveSystem = () => signatureState.currentSystem;
 
 

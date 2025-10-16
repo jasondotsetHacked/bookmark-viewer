@@ -4,6 +4,7 @@ import { lockNodes, unlockNodes, dragStarted, dragged, dragEnded } from './dragH
 
 const PLACEHOLDER_PATTERN = /^\?+$/;
 const PLACEHOLDER_KEY_COLUMNS = ['Label', 'Type', 'SOL', 'CON', 'REG', 'Date', 'Expiry', 'Creator', 'Jumps'];
+const PLACEHOLDER_FLAG_TOKENS = new Set(['VEOL', 'EOL', 'CRIT', 'HALF', 'STABLE']);
 
 function buildPlaceholderKey(systemFrom, placeholder, row) {
   const parts = [systemFrom || '', placeholder || ''];
@@ -102,8 +103,10 @@ function extractWormholeClass(rawLabel) {
 /**
  * Displays the map with the given data.
  * @param {Array<Object>} data The data to display on the map.
+ * @param {Object} options Options for displaying the map.
+ * @param {boolean} options.preserveSelection Whether to preserve the current system selection.
  */
-export function displayMap(data) {
+export function displayMap(data, options = {}) {
   console.log('displayMap called with data:', data);
   const mapContainer = document.getElementById('mapContainer');
   if (!mapContainer) {
@@ -111,7 +114,14 @@ export function displayMap(data) {
     return;
   }
 
+  const previousSelection = options?.preserveSelection
+    ? (window.__bookmarkViewerSelectedSystem || null)
+    : null;
+
   const previousRuntime = mapContainer.__mapRuntime || null;
+  if (previousRuntime?.settleTimer) {
+    clearTimeout(previousRuntime.settleTimer);
+  }
   let previousPositions = new Map();
   let previousTransform = null;
 
@@ -177,18 +187,26 @@ export function displayMap(data) {
   searchInput.placeholder = 'Jump to system...';
   searchInput.setAttribute('aria-label', 'System name');
   searchInput.autocomplete = 'off';
+  searchInput.setAttribute('role', 'combobox');
+  searchInput.setAttribute('aria-autocomplete', 'list');
+  searchInput.setAttribute('aria-expanded', 'false');
 
   const searchSubmit = document.createElement('button');
   searchSubmit.type = 'button';
   searchSubmit.className = 'map-search-submit';
   searchSubmit.textContent = 'Go';
 
+  const searchSuggestions = document.createElement('ul');
+  searchSuggestions.className = 'map-search-suggestions';
+  searchSuggestions.hidden = true;
+  searchSuggestions.setAttribute('role', 'listbox');
+
   const searchMessage = document.createElement('div');
   searchMessage.className = 'map-search-message';
   searchMessage.setAttribute('role', 'status');
   searchMessage.setAttribute('aria-live', 'polite');
 
-  searchPanel.append(searchInput, searchSubmit, searchMessage);
+  searchPanel.append(searchInput, searchSubmit, searchSuggestions, searchMessage);
   searchControls.append(searchToggle, searchPanel);
   mapContainer.appendChild(searchControls);
 
@@ -198,8 +216,20 @@ export function displayMap(data) {
     panel: searchPanel,
     input: searchInput,
     submit: searchSubmit,
+    suggestions: searchSuggestions,
     message: searchMessage
   };
+
+  const suggestionIdPrefix = `map-search-suggestion-${Date.now().toString(36)}-${Math.floor(Math.random() * 1000)}`;
+  searchSuggestions.id = `${suggestionIdPrefix}-list`;
+  searchInput.setAttribute('aria-controls', searchSuggestions.id);
+
+  const MAX_SUGGESTION_RESULTS = 8;
+  const MIN_FUZZY_SCORE = 5;
+  let suggestionEntries = [];
+  let suggestionDataset = [];
+  let highlightedSuggestionIndex = -1;
+  let exactMatchIndex = new Map();
 
   searchToggle.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -214,12 +244,37 @@ export function displayMap(data) {
   searchPanel.addEventListener('click', (event) => event.stopPropagation());
 
   searchInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
+    if (event.key === 'ArrowDown') {
       event.preventDefault();
-      handleSearchSubmit();
+      moveSuggestionHighlight(1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveSuggestionHighlight(-1);
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      if (highlightedSuggestionIndex >= 0) {
+        applySuggestion(highlightedSuggestionIndex);
+      } else {
+        handleSearchSubmit();
+      }
     } else if (event.key === 'Escape') {
       event.preventDefault();
-      closeSearchPanel();
+      if (highlightedSuggestionIndex >= 0) {
+        clearSuggestions();
+        hideSuggestions();
+      } else {
+        closeSearchPanel();
+      }
+    }
+  });
+
+  searchInput.addEventListener('input', (event) => {
+    updateSuggestionResults(event.target.value || '');
+  });
+
+  searchInput.addEventListener('focus', () => {
+    if (suggestionEntries.length) {
+      showSuggestions();
     }
   });
 
@@ -253,11 +308,14 @@ export function displayMap(data) {
     return '#d3d3d3';
   };
 
-  if (typeof window.setSignatureActiveSystem === 'function') {
-    window.setSignatureActiveSystem(null);
-  }
-  if (typeof window.setSystemIntelActiveSystem === 'function') {
-    window.setSystemIntelActiveSystem(null);
+  if (!options.preserveSelection) {
+    if (typeof window.setSignatureActiveSystem === 'function') {
+      window.setSignatureActiveSystem(null);
+    }
+    if (typeof window.setSystemIntelActiveSystem === 'function') {
+      window.setSystemIntelActiveSystem(null);
+    }
+    window.__bookmarkViewerSelectedSystem = null;
   }
 
   const classColors = {
@@ -300,20 +358,40 @@ export function displayMap(data) {
       return;
     }
 
+    const labelTokens = rawLabel.trim().split(/\s+/).filter(Boolean);
+    const normalizedLabelTokens = labelTokens.map((token) => token.toUpperCase());
+
     if (rawLabel.startsWith('-')) {
       const [systemFrom, systemToRaw] = extractSystems(rawLabel, row['SOL']);
       if (systemFrom && systemToRaw) {
         const wormholeClassFromLabel = extractWormholeClass(rawLabel);
         const targetInfo = (() => {
-          const placeholderMatch = systemToRaw.match(/^([A-Z0-9]{2})(.*?) (\?+)$/);
-          if (PLACEHOLDER_PATTERN.test(systemToRaw) || placeholderMatch) {
-            const placeholder = placeholderMatch ? placeholderMatch[1] : systemToRaw;
-            const placeholderSuffix = placeholderMatch ? placeholderMatch[3] : null;
-            const placeholderClass = placeholderMatch ? placeholderMatch[1].toUpperCase() : null;
-            const displayName = placeholderSuffix || (PLACEHOLDER_PATTERN.test(systemToRaw) ? systemToRaw : '???');
-            const resolvedClass = wormholeClassFromLabel || placeholderClass;
+          const tokens = systemToRaw.split(/\s+/).filter(Boolean);
+          const placeholderIndex = tokens.findIndex((token) => {
+            const normalized = token.replace(/[^?]/g, '');
+            return normalized && PLACEHOLDER_PATTERN.test(normalized);
+          });
+          const trailingTokens = placeholderIndex >= 0 ? tokens.slice(placeholderIndex + 1) : [];
+          const trailingAreFlags = trailingTokens.every((token) => {
+            const normalized = token.replace(/[^A-Za-z]/g, '').toUpperCase();
+            return normalized && PLACEHOLDER_FLAG_TOKENS.has(normalized);
+          });
+          const isPlaceholderCandidate = placeholderIndex >= 0 && (trailingTokens.length === 0 || trailingAreFlags);
+
+          if (isPlaceholderCandidate) {
+            const baseTokens = tokens.slice(0, placeholderIndex + 1);
+            const placeholderTokenRaw = tokens[placeholderIndex] || '???';
+            const displayName = placeholderTokenRaw.replace(/[^?]/g, '') || '???';
+            const placeholderKeyTokens = baseTokens
+              .slice(0, -1)
+              .concat(displayName);
+            const placeholderKey = placeholderKeyTokens.join(' ') || '???';
+            const resolvedClass =
+              wormholeClassFromLabel ||
+              extractWormholeClass(placeholderKey) ||
+              null;
             const normalizedClass = resolvedClass ? resolvedClass.toUpperCase() : null;
-            const cacheKey = buildPlaceholderKey(systemFrom, placeholder, row);
+            const cacheKey = buildPlaceholderKey(systemFrom, placeholderKey, row);
             const cached = placeholderCache.get(cacheKey);
             if (cached) {
               if (normalizedClass && cached.wormholeClass !== normalizedClass) {
@@ -339,28 +417,71 @@ export function displayMap(data) {
             };
             placeholderCache.set(cacheKey, entry);
             return entry;
-          } else {
-            return {
-              id: systemToRaw,
-              displayName: systemToRaw,
-              filterKey: systemToRaw,
-              isPlaceholder: false,
-              originSystem: systemToRaw
-            };
           }
+
+          const legacyMatch = systemToRaw.match(/^([A-Z0-9]{2})(.*?) (\?+)$/);
+          if (PLACEHOLDER_PATTERN.test(systemToRaw) || legacyMatch) {
+            const placeholderTokenRaw = legacyMatch ? legacyMatch[3] : systemToRaw;
+            const displayName = placeholderTokenRaw.replace(/[^?]/g, '') || '???';
+            const legacyPrefix = legacyMatch ? `${legacyMatch[1]}${legacyMatch[2]}`.trim() : '';
+            const placeholderKey = legacyPrefix ? `${legacyPrefix} ${displayName}`.trim() : displayName;
+            const placeholderClass = legacyMatch ? legacyMatch[1] : null;
+            const resolvedClassRaw =
+              wormholeClassFromLabel ||
+              placeholderClass ||
+              extractWormholeClass(placeholderKey) ||
+              null;
+            const normalizedClass = resolvedClassRaw ? resolvedClassRaw.toUpperCase() : null;
+            const cacheKey = buildPlaceholderKey(systemFrom, placeholderKey, row);
+            const cached = placeholderCache.get(cacheKey);
+            if (cached) {
+              if (normalizedClass && cached.wormholeClass !== normalizedClass) {
+                cached.wormholeClass = normalizedClass;
+              }
+              if (displayName && cached.displayName !== displayName) {
+                cached.displayName = displayName;
+              }
+              return cached;
+            }
+            const hash = stableHash(cacheKey);
+            const suffix = (hash.length >= 6 ? hash.slice(0, 6) : hash.padEnd(6, '0')).toUpperCase();
+            const id = `${systemFrom}::UNKNOWN::${suffix}`;
+            const entry = {
+              id,
+              displayName,
+              filterKey: systemFrom,
+              isPlaceholder: true,
+              originSystem: systemFrom,
+              wormholeClass: normalizedClass,
+              hash,
+              cacheKey
+            };
+            placeholderCache.set(cacheKey, entry);
+            return entry;
+          }
+
+          return {
+            id: systemToRaw,
+            displayName: systemToRaw,
+            filterKey: systemToRaw,
+            isPlaceholder: false,
+            originSystem: systemToRaw
+          };
         })();
 
         const systemTo = targetInfo.id;
         if (targetInfo.isPlaceholder && !targetInfo.wormholeClass && wormholeClassFromLabel) {
           targetInfo.wormholeClass = wormholeClassFromLabel.toUpperCase();
         }
-        const isEOL = rawLabel.includes('EOL');
-        const isCRIT = rawLabel.includes('CRIT');
+        const isVEOL = normalizedLabelTokens.includes('VEOL');
+        const isEOL = normalizedLabelTokens.includes('EOL');
+        const isCRIT = normalizedLabelTokens.includes('CRIT');
         const candidateKey = buildConnectionKey(systemFrom, systemTo);
         let candidate = connectionCandidates.get(candidateKey);
         if (!candidate) {
           candidate = {
             directions: new Set(),
+            isVEOL: false,
             isEOL: false,
             isCRIT: false,
             containsPlaceholder: false,
@@ -369,6 +490,7 @@ export function displayMap(data) {
           connectionCandidates.set(candidateKey, candidate);
         }
         candidate.directions.add(`${systemFrom}|${systemTo}`);
+        candidate.isVEOL = candidate.isVEOL || isVEOL;
         candidate.isEOL = candidate.isEOL || isEOL;
         candidate.isCRIT = candidate.isCRIT || isCRIT;
         candidate.containsPlaceholder = candidate.containsPlaceholder || Boolean(targetInfo.isPlaceholder);
@@ -427,6 +549,7 @@ export function displayMap(data) {
     connections.push({
       source,
       target,
+      isVEOL: candidate.isVEOL,
       isEOL: candidate.isEOL,
       isCRIT: candidate.isCRIT
     });
@@ -448,6 +571,11 @@ export function displayMap(data) {
   const links = connections.filter((connection) => (
     connectedSystemNames.has(connection.source) && connectedSystemNames.has(connection.target)
   ));
+
+  suggestionDataset = buildSearchIndex(nodes);
+  exactMatchIndex = buildExactMatchIndex(suggestionDataset);
+  clearSuggestions();
+  hideSuggestions();
 
   console.log('systems:', systems);
   console.log('connections:', links);
@@ -531,14 +659,18 @@ export function displayMap(data) {
     if (saved) {
       node.x = saved.x;
       node.y = saved.y;
-      node.vx = saved.vx;
-      node.vy = saved.vy;
-      node.fx = saved.fx;
-      node.fy = saved.fy;
+      node.vx = 0;
+      node.vy = 0;
+      const savedFx = Number.isFinite(saved.fx) ? saved.fx : saved.x;
+      const savedFy = Number.isFinite(saved.fy) ? saved.fy : saved.y;
+      node.fx = savedFx;
+      node.fy = savedFy;
       return;
     }
 
     if (!hasPreviousLayout) {
+      node.vx = 0;
+      node.vy = 0;
       return;
     }
 
@@ -560,12 +692,16 @@ export function displayMap(data) {
         const avgY = neighborPositions.reduce((sum, pos) => sum + (Number.isFinite(pos.y) ? pos.y : height / 2), 0) / neighborPositions.length;
         node.x = avgX + randomOffset();
         node.y = avgY + randomOffset();
+        node.vx = 0;
+        node.vy = 0;
         return;
       }
     }
 
     node.x = (width / 2) + randomOffset();
     node.y = (height / 2) + randomOffset();
+    node.vx = 0;
+    node.vy = 0;
   });
 
   console.log('mapContainer dimensions:', width, height);
@@ -584,7 +720,8 @@ export function displayMap(data) {
   const runtimeState = {
     simulation: null,
     nodes,
-    currentTransform
+    currentTransform,
+    settleTimer: null
   };
 
   const zoom = d3.zoom()
@@ -609,6 +746,391 @@ export function displayMap(data) {
     searchContext.message.classList.toggle('map-search-message-error', tone === 'error');
   }
 
+  function clearSuggestions() {
+    highlightedSuggestionIndex = -1;
+    suggestionEntries = [];
+    if (searchContext.suggestions) {
+      searchContext.suggestions.innerHTML = '';
+    }
+    if (searchContext.input) {
+      searchContext.input.setAttribute('aria-activedescendant', '');
+    }
+  }
+
+  function hideSuggestions() {
+    if (!searchContext.suggestions) {
+      return;
+    }
+    searchContext.suggestions.hidden = true;
+    if (searchContext.input) {
+      searchContext.input.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  function showSuggestions() {
+    if (!searchContext.suggestions || !suggestionEntries.length) {
+      return;
+    }
+    searchContext.suggestions.hidden = false;
+    if (searchContext.input) {
+      searchContext.input.setAttribute('aria-expanded', 'true');
+    }
+  }
+
+  function highlightSuggestion(index) {
+    if (!searchContext.suggestions) {
+      return;
+    }
+    const items = searchContext.suggestions.querySelectorAll('.map-search-suggestion');
+    items.forEach((item) => item.classList.remove('is-active'));
+    highlightedSuggestionIndex = index;
+    if (index >= 0 && index < items.length) {
+      const activeItem = items[index];
+      activeItem.classList.add('is-active');
+      if (searchContext.input) {
+        searchContext.input.setAttribute('aria-activedescendant', activeItem.id || '');
+      }
+      activeItem.scrollIntoView({ block: 'nearest' });
+    } else if (searchContext.input) {
+      searchContext.input.setAttribute('aria-activedescendant', '');
+    }
+  }
+
+  function moveSuggestionHighlight(delta) {
+    if (!suggestionEntries.length) {
+      return;
+    }
+    let nextIndex;
+    if (highlightedSuggestionIndex < 0) {
+      nextIndex = delta > 0 ? 0 : suggestionEntries.length - 1;
+    } else {
+      nextIndex = highlightedSuggestionIndex + delta;
+      if (nextIndex < 0) {
+        nextIndex = suggestionEntries.length - 1;
+      } else if (nextIndex >= suggestionEntries.length) {
+        nextIndex = 0;
+      }
+    }
+    highlightSuggestion(nextIndex);
+  }
+
+  function applySuggestion(index) {
+    const suggestion = suggestionEntries[index];
+    if (!suggestion || !suggestion.node) {
+      return;
+    }
+    if (searchContext.input) {
+      searchContext.input.value = suggestion.primaryLabel;
+    }
+    hideSuggestions();
+    clearSuggestions();
+    handleSearchSubmit(suggestion.node);
+  }
+
+  function renderSuggestionList(results, query) {
+    if (!searchContext.suggestions) {
+      return;
+    }
+    searchContext.suggestions.innerHTML = '';
+    highlightedSuggestionIndex = -1;
+    suggestionEntries = results;
+
+    if (!results.length) {
+      hideSuggestions();
+      if (searchContext.input) {
+        searchContext.input.setAttribute('aria-activedescendant', '');
+      }
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    results.forEach((result, index) => {
+      const item = document.createElement('li');
+      const optionId = `${suggestionIdPrefix}-${index}`;
+      item.className = 'map-search-suggestion';
+      item.id = optionId;
+      item.setAttribute('role', 'option');
+      item.setAttribute('data-index', index.toString());
+      item.innerHTML = buildSuggestionMarkup(result, query);
+      item.addEventListener('mouseenter', () => highlightSuggestion(index));
+      item.addEventListener('mouseleave', () => {
+        if (highlightedSuggestionIndex === index) {
+          highlightSuggestion(-1);
+        }
+      });
+      item.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        applySuggestion(index);
+      });
+      fragment.appendChild(item);
+    });
+    searchContext.suggestions.appendChild(fragment);
+    showSuggestions();
+  }
+
+  function updateSuggestionResults(rawQuery) {
+    if (!searchContext.input) {
+      return;
+    }
+    const query = rawQuery.trim();
+    if (!query) {
+      clearSuggestions();
+      hideSuggestions();
+      return;
+    }
+    if (!suggestionDataset.length) {
+      clearSuggestions();
+      hideSuggestions();
+      return;
+    }
+    const results = runFuzzySearch(query, MAX_SUGGESTION_RESULTS);
+    renderSuggestionList(results, query);
+  }
+
+  function buildSuggestionMarkup(result, query) {
+    const primary = highlightMatch(result.displayLabel, query);
+    const metadata = result.meta ? `<span class="map-search-suggestion-meta">${escapeHtml(result.meta)}</span>` : '';
+    return `<span class="map-search-suggestion-label">${primary}</span>${metadata}`;
+  }
+
+  function highlightMatch(label, query) {
+    if (!label) {
+      return '';
+    }
+    const normalizedLabel = label.toLowerCase();
+    const normalizedQuery = query.toLowerCase();
+    const index = normalizedLabel.indexOf(normalizedQuery);
+    if (index === -1 || !query) {
+      return escapeHtml(label);
+    }
+    const before = escapeHtml(label.slice(0, index));
+    const match = escapeHtml(label.slice(index, index + query.length));
+    const after = escapeHtml(label.slice(index + query.length));
+    return `${before}<span class="map-search-suggestion-highlight">${match}</span>${after}`;
+  }
+
+  function escapeHtml(value) {
+    if (value === undefined || value === null) {
+      return '';
+    }
+    return value
+      .toString()
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function runFuzzySearch(rawQuery, limit = MAX_SUGGESTION_RESULTS) {
+    const query = rawQuery.trim().toLowerCase();
+    if (!query) {
+      return [];
+    }
+    const results = [];
+    suggestionDataset.forEach((entry) => {
+      let bestScore = Number.NEGATIVE_INFINITY;
+      let bestLabel = entry.primaryLabel;
+      for (let index = 0; index < entry.normalizedLabels.length; index += 1) {
+        const candidate = entry.normalizedLabels[index];
+        const score = computeFuzzyScore(candidate, query);
+        if (score > bestScore) {
+          bestScore = score;
+          bestLabel = entry.labels[index];
+        }
+      }
+      if (bestScore >= MIN_FUZZY_SCORE) {
+        const displayLabel = bestLabel || entry.primaryLabel;
+        const metaParts = [];
+        const pushMeta = (value) => {
+          if (!value || typeof value !== 'string') {
+            return;
+          }
+          const trimmed = value.trim();
+          if (!trimmed) {
+            return;
+          }
+          if (!metaParts.includes(trimmed)) {
+            metaParts.push(trimmed);
+          }
+        };
+        if (displayLabel !== entry.primaryLabel) {
+          pushMeta(entry.primaryLabel);
+        }
+        if (Array.isArray(entry.metaParts)) {
+          entry.metaParts.forEach(pushMeta);
+        }
+        results.push({
+          node: entry.node,
+          primaryLabel: entry.primaryLabel,
+          displayLabel,
+          meta: metaParts.join(' • '),
+          score: bestScore
+        });
+      }
+    });
+
+    results.sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      return a.primaryLabel.localeCompare(b.primaryLabel);
+    });
+
+    if (limit > 0) {
+      return results.slice(0, limit);
+    }
+    return results;
+  }
+
+  function buildSearchIndex(nodesList) {
+    const entries = [];
+    if (!Array.isArray(nodesList)) {
+      return entries;
+    }
+    nodesList.forEach((node) => {
+      if (!node || !node.name || node.isPlaceholder) {
+        return;
+      }
+      const primaryLabel = (typeof node.displayName === 'string' && node.displayName.trim())
+        ? node.displayName.trim()
+        : node.name;
+      const labelMap = new Map();
+      const addLabel = (value) => {
+        if (!value || typeof value !== 'string') {
+          return;
+        }
+        const trimmed = value.trim();
+        if (!trimmed) {
+          return;
+        }
+        const normalized = trimmed.toLowerCase();
+        if (!labelMap.has(normalized)) {
+          labelMap.set(normalized, trimmed);
+        }
+      };
+      addLabel(node.name);
+      addLabel(node.displayName);
+      addLabel(node.filterKey);
+      addLabel(node.originSystem);
+      addLabel(node.nickname);
+      addLabel(node.id);
+
+      const labels = Array.from(labelMap.values());
+      const normalizedLabels = Array.from(labelMap.keys());
+
+      const metaParts = [];
+      if (typeof node.wormholeClass === 'string' && node.wormholeClass.trim()) {
+        metaParts.push(node.wormholeClass.trim().toUpperCase());
+      }
+      const originLabel = node.originSystem || node.filterKey;
+      if (originLabel && originLabel !== primaryLabel) {
+        metaParts.push(originLabel);
+      }
+      entries.push({
+        node,
+        primaryLabel,
+        labels,
+        normalizedLabels,
+        metaParts
+      });
+    });
+    return entries;
+  }
+
+  function buildExactMatchIndex(entries) {
+    const map = new Map();
+    entries.forEach((entry) => {
+      entry.normalizedLabels.forEach((label) => {
+        if (!map.has(label)) {
+          map.set(label, entry.node);
+        }
+      });
+    });
+    return map;
+  }
+
+  function computeFuzzyScore(candidate, query) {
+    if (!candidate) {
+      return Number.NEGATIVE_INFINITY;
+    }
+    if (candidate === query) {
+      return 100;
+    }
+    let score = 0;
+    if (candidate.startsWith(query)) {
+      score += 60;
+    }
+    const index = candidate.indexOf(query);
+    if (index >= 0) {
+      score += 40 - (index * 1.5);
+    }
+    const distance = levenshteinDistance(query, candidate);
+    const maxLen = Math.max(candidate.length, query.length) || 1;
+    const similarity = 1 - (distance / maxLen);
+    score += similarity * 35;
+    score += sequentialMatchBonus(candidate, query);
+    return score;
+  }
+
+  function sequentialMatchBonus(candidate, query) {
+    if (!candidate || !query) {
+      return 0;
+    }
+    let score = 0;
+    let lastIndex = -1;
+    for (let i = 0; i < query.length; i += 1) {
+      const char = query[i];
+      const nextIndex = candidate.indexOf(char, lastIndex + 1);
+      if (nextIndex === -1) {
+        score -= 3;
+        continue;
+      }
+      score += 4;
+      if (nextIndex === lastIndex + 1) {
+        score += 2;
+      }
+      lastIndex = nextIndex;
+    }
+    return score;
+  }
+
+  function levenshteinDistance(a, b) {
+    if (a === b) {
+      return 0;
+    }
+    const lenA = a.length;
+    const lenB = b.length;
+    if (lenA === 0) {
+      return lenB;
+    }
+    if (lenB === 0) {
+      return lenA;
+    }
+    const previous = new Array(lenB + 1);
+    const current = new Array(lenB + 1);
+    for (let j = 0; j <= lenB; j += 1) {
+      previous[j] = j;
+    }
+    for (let i = 1; i <= lenA; i += 1) {
+      current[0] = i;
+      const charA = a.charCodeAt(i - 1);
+      for (let j = 1; j <= lenB; j += 1) {
+        const charB = b.charCodeAt(j - 1);
+        const cost = charA === charB ? 0 : 1;
+        current[j] = Math.min(
+          previous[j] + 1,
+          current[j - 1] + 1,
+          previous[j - 1] + cost
+        );
+      }
+      for (let j = 0; j <= lenB; j += 1) {
+        previous[j] = current[j];
+      }
+    }
+    return previous[lenB];
+  }
+
   function openSearchPanel() {
     if (!searchContext.panel || !searchContext.toggle) {
       return;
@@ -619,10 +1141,16 @@ export function displayMap(data) {
     searchContext.panel.hidden = false;
     searchContext.toggle.setAttribute('aria-expanded', 'true');
     setSearchMessage();
+    if (searchContext.input && searchContext.input.value.trim()) {
+      updateSuggestionResults(searchContext.input.value);
+    }
     requestAnimationFrame(() => {
       if (searchContext.input) {
         searchContext.input.focus();
         searchContext.input.select();
+        if (suggestionEntries.length) {
+          showSuggestions();
+        }
       }
     });
   }
@@ -637,6 +1165,8 @@ export function displayMap(data) {
     searchContext.panel.hidden = true;
     searchContext.toggle.setAttribute('aria-expanded', 'false');
     setSearchMessage();
+    clearSuggestions();
+    hideSuggestions();
   }
 
   function toggleSearchPanel() {
@@ -657,6 +1187,10 @@ export function displayMap(data) {
     const query = rawQuery.trim().toLowerCase();
     if (!query) {
       return null;
+    }
+    const directMatch = exactMatchIndex.get(query);
+    if (directMatch) {
+      return directMatch;
     }
     return nodes.find((nodeEntry) => {
       if (!nodeEntry) {
@@ -687,6 +1221,7 @@ export function displayMap(data) {
     const selectionKey = targetNode.filterKey || targetNode.name;
     const keys = ['Label', 'Type', 'Jumps', 'SOL', 'CON', 'REG', 'Date', 'Expiry', 'Creator'];
     displayTable(keys, data, selectionKey);
+    window.__bookmarkViewerSelectedSystem = selectionKey;
     lockNodes(simulation, nodes);
 
     if (typeof window.setSignatureActiveSystem === 'function') {
@@ -731,22 +1266,43 @@ export function displayMap(data) {
     return true;
   }
 
-  function handleSearchSubmit() {
+  function handleSearchSubmit(preselectedNode = null) {
     if (!searchContext.input) {
       return;
     }
-    const query = searchContext.input.value.trim();
-    if (!query) {
-      setSearchMessage('Enter a system name.', 'error');
-      return;
-    }
+    const rawValue = searchContext.input.value || '';
+    const query = rawValue.trim();
+    let targetNode = preselectedNode;
 
-    const targetNode = findNodeByQuery(query);
+    if (!targetNode) {
+      if (!query) {
+        setSearchMessage('Enter a system name.', 'error');
+        return;
+      }
+      targetNode = findNodeByQuery(query);
+      if (!targetNode && suggestionEntries.length) {
+        const firstSuggestion = suggestionEntries[0];
+        if (firstSuggestion && firstSuggestion.node) {
+          targetNode = firstSuggestion.node;
+          if (firstSuggestion.primaryLabel) {
+            searchContext.input.value = firstSuggestion.primaryLabel;
+          }
+        }
+      }
+    } else if (!query) {
+      const preferredLabel = preselectedNode.displayName || preselectedNode.name;
+      if (preferredLabel) {
+        searchContext.input.value = preferredLabel;
+      }
+    }
 
     if (!targetNode) {
       setSearchMessage('System not found', 'error');
       return;
     }
+
+    clearSuggestions();
+    hideSuggestions();
 
     const selectionApplied = applySystemSelection(targetNode);
 
@@ -815,10 +1371,16 @@ export function displayMap(data) {
   runtimeState.simulation = simulation;
   runtimeState.nodes = nodes;
   mapContainer.__mapRuntime = runtimeState;
-
-  if (hasPreviousLayout) {
+  const settleDelay = 200;
+  // Let the physics engine settle briefly so new systems space out, then freeze the layout.
+  const settleTimer = setTimeout(() => {
+    if (mapContainer.__mapRuntime !== runtimeState) {
+      return;
+    }
     lockNodes(simulation, nodes);
-  }
+    runtimeState.settleTimer = null;
+  }, settleDelay);
+  runtimeState.settleTimer = settleTimer;
 
   const updateViewportSize = (nextWidth, nextHeight) => {
     if (!nextWidth || !nextHeight) {
@@ -893,6 +1455,8 @@ export function displayMap(data) {
     .enter().append('line')
     .attr('stroke-width', 5)
     .attr('stroke', (d) => {
+      if (d.isVEOL && d.isCRIT) return 'url(#gradient-veol-crit)';
+      if (d.isVEOL) return '#FF0000'; // Red for VEOL
       if (d.isEOL && d.isCRIT) return 'url(#gradient-eol-crit)';
       if (d.isEOL) return '#800080'; // Purple for EOL
       if (d.isCRIT) return '#FFA500'; // Orange for CRIT
@@ -910,6 +1474,19 @@ export function displayMap(data) {
     .attr('offset', '0%')
     .attr('stop-color', '#800080'); // Purple
   gradient.append('stop')
+    .attr('offset', '100%')
+    .attr('stop-color', '#FFA500'); // Orange
+
+  const veolGradient = svgDefs.append('linearGradient')
+    .attr('id', 'gradient-veol-crit')
+    .attr('x1', '0%')
+    .attr('y1', '0%')
+    .attr('x2', '100%')
+    .attr('y2', '100%');
+  veolGradient.append('stop')
+    .attr('offset', '0%')
+    .attr('stop-color', '#FF0000'); // Red
+  veolGradient.append('stop')
     .attr('offset', '100%')
     .attr('stop-color', '#FFA500'); // Orange
 
@@ -963,6 +1540,7 @@ export function displayMap(data) {
       if (typeof window.setSystemIntelActiveSystem === 'function') {
         window.setSystemIntelActiveSystem(null);
       }
+      window.__bookmarkViewerSelectedSystem = null;
       closeSearchPanel();
     }
   });
@@ -994,6 +1572,14 @@ export function displayMap(data) {
 
   window.addEventListener('systemNicknameUpdated', nicknameListener);
   window.__bookmarkViewerNicknameListener = nicknameListener;
+
+  if (previousSelection) {
+    const preservedNode = findNodeByQuery(previousSelection);
+    if (preservedNode) {
+      applySystemSelection(preservedNode);
+      focusOnSystem(preservedNode);
+    }
+  }
 
   function ticked() {
     link
@@ -1090,9 +1676,11 @@ function filterBookmarksBySystem(systemName) {
         if (typeof window.setSystemIntelActiveSystem === 'function') {
             window.setSystemIntelActiveSystem(systemName);
         }
+        window.__bookmarkViewerSelectedSystem = systemName || null;
     });
 }
 
 window.displayMap = displayMap;
 export const statuses = {};
 export { filterBookmarksBySystem }; // Export the function for use in dragHandlers.js
+window.getMapSelectedSystem = () => window.__bookmarkViewerSelectedSystem || null;

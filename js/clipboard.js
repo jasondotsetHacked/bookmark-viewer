@@ -24,8 +24,15 @@ async function readClipboardAndDisplayTable() {
         const timestamp = new Date().toISOString();
         await db.add('versions', { timestamp, data: parsedData });
 
+        const preservedSelection =
+            window.__bookmarkViewerSelectedSystem ||
+            (typeof window.getCurrentTableFilter === 'function' ? window.getCurrentTableFilter() : null);
+        if (preservedSelection && !window.__bookmarkViewerSelectedSystem) {
+            window.__bookmarkViewerSelectedSystem = preservedSelection;
+        }
+
         displayTable(keys, parsedData);
-        displayMap(parsedData);
+        displayMap(parsedData, { preserveSelection: true });
         updateTimestampDisplay(timestamp);
         displayErrorMessage(''); // Clear any previous error message
     } catch (error) {

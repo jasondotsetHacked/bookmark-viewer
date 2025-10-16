@@ -358,3 +358,4 @@ function dispatchNicknameUpdate(system, nickname) {
 
 window.setSystemIntelActiveSystem = setSystemIntelActiveSystem;
 window.getSystemNickname = getSystemNickname;
+window.getSystemIntelActiveSystem = () => intelState.currentSystem;

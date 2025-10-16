@@ -137,4 +137,5 @@ window.displayTable = displayTable;
 window.updateBookmarkSignatureMatches = updateBookmarkSignatureMatches;
 window.createBookmarkKey = createBookmarkKey;
 window.renderActiveTable = renderTable;
+window.getCurrentTableFilter = () => cachedFilter;
 
