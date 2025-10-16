@@ -54,6 +54,47 @@ function createPlaceholderIdentifier(systemFrom, placeholder, row, cache) {
   return entry;
 }
 
+function buildConnectionKey(systemA, systemB) {
+  const left = systemA || '';
+  const right = systemB || '';
+  return left <= right ? `${left}|${right}` : `${right}|${left}`;
+}
+
+const WORMHOLE_CLASS_PREFIXES = [
+  'HS',
+  'LS',
+  'NS',
+  'C1',
+  'C2',
+  'C3',
+  'C4',
+  'C5',
+  'C6',
+  'C13',
+  'THERA',
+  'PV'
+];
+
+function extractWormholeClass(rawLabel) {
+  if (!rawLabel || typeof rawLabel !== 'string') {
+    return null;
+  }
+  const tokens = rawLabel.split(/\s+/);
+  for (let index = 0; index < tokens.length; index += 1) {
+    const normalizedToken = tokens[index].replace(/[^\w?]/g, '').toUpperCase();
+    if (!normalizedToken) {
+      continue;
+    }
+    for (let prefixIndex = 0; prefixIndex < WORMHOLE_CLASS_PREFIXES.length; prefixIndex += 1) {
+      const prefix = WORMHOLE_CLASS_PREFIXES[prefixIndex];
+      if (normalizedToken.startsWith(prefix)) {
+        return prefix;
+      }
+    }
+  }
+  return null;
+}
+
 /**
  * Displays the map with the given data.
  * @param {Array<Object>} data The data to display on the map.
@@ -188,9 +229,10 @@ export function displayMap(data) {
   }
 
   const systems = {};
-  const connections = [];
+  let connections = [];
   const statuses = {};
   const placeholderCache = new Map();
+  const connectionCandidates = new Map();
 
   const getStatusColor = (nodeOrName) => {
     let statusKey = null;
@@ -225,7 +267,8 @@ export function displayMap(data) {
     "C5": "#FF7F27",
     "C6": "#ED1C24",
     "THERA": "#FFFFFF",
-    "C13": "#7F7F7F"
+    "C13": "#7F7F7F",
+    "PV": "#FF9800"
   };
 
   data.forEach((row) => {
@@ -239,29 +282,77 @@ export function displayMap(data) {
     if (rawLabel.startsWith('-')) {
       const [systemFrom, systemToRaw] = extractSystems(rawLabel, row['SOL']);
       if (systemFrom && systemToRaw) {
-        const targetInfo = PLACEHOLDER_PATTERN.test(systemToRaw)
-          ? createPlaceholderIdentifier(systemFrom, systemToRaw, row, placeholderCache)
-          : {
-            id: systemToRaw,
-            displayName: systemToRaw,
-            filterKey: systemToRaw,
-            isPlaceholder: false,
-            originSystem: systemToRaw
-          };
+        const wormholeClassFromLabel = extractWormholeClass(rawLabel);
+        const targetInfo = (() => {
+          const placeholderMatch = systemToRaw.match(/^([A-Z0-9]{2})(.*?) (\?+)$/);
+          if (PLACEHOLDER_PATTERN.test(systemToRaw) || placeholderMatch) {
+            const placeholder = placeholderMatch ? placeholderMatch[1] : systemToRaw;
+            const placeholderSuffix = placeholderMatch ? placeholderMatch[3] : null;
+            const placeholderClass = placeholderMatch ? placeholderMatch[1].toUpperCase() : null;
+            const displayName = placeholderSuffix || (PLACEHOLDER_PATTERN.test(systemToRaw) ? systemToRaw : '???');
+            const resolvedClass = wormholeClassFromLabel || placeholderClass;
+            const normalizedClass = resolvedClass ? resolvedClass.toUpperCase() : null;
+            const cacheKey = buildPlaceholderKey(systemFrom, placeholder, row);
+            const cached = placeholderCache.get(cacheKey);
+            if (cached) {
+              if (normalizedClass && cached.wormholeClass !== normalizedClass) {
+                cached.wormholeClass = normalizedClass;
+              }
+              if (displayName && cached.displayName !== displayName) {
+                cached.displayName = displayName;
+              }
+              return cached;
+            }
+            const hash = stableHash(cacheKey);
+            const suffix = (hash.length >= 6 ? hash.slice(0, 6) : hash.padEnd(6, '0')).toUpperCase();
+            const id = `${systemFrom}::UNKNOWN::${suffix}`;
+            const entry = {
+              id,
+              displayName,
+              filterKey: systemFrom,
+              isPlaceholder: true,
+              originSystem: systemFrom,
+              wormholeClass: normalizedClass,
+              hash,
+              cacheKey
+            };
+            placeholderCache.set(cacheKey, entry);
+            return entry;
+          } else {
+            return {
+              id: systemToRaw,
+              displayName: systemToRaw,
+              filterKey: systemToRaw,
+              isPlaceholder: false,
+              originSystem: systemToRaw
+            };
+          }
+        })();
 
         const systemTo = targetInfo.id;
+        if (targetInfo.isPlaceholder && !targetInfo.wormholeClass && wormholeClassFromLabel) {
+          targetInfo.wormholeClass = wormholeClassFromLabel.toUpperCase();
+        }
         const isEOL = rawLabel.includes('EOL');
         const isCRIT = rawLabel.includes('CRIT');
-        const existingConnection = connections.find((conn) =>
-          (conn.source === systemFrom && conn.target === systemTo) ||
-          (conn.source === systemTo && conn.target === systemFrom)
-        );
-
-        if (existingConnection) {
-          existingConnection.isEOL = existingConnection.isEOL || isEOL;
-          existingConnection.isCRIT = existingConnection.isCRIT || isCRIT;
-        } else {
-          connections.push({ source: systemFrom, target: systemTo, isEOL, isCRIT });
+        const candidateKey = buildConnectionKey(systemFrom, systemTo);
+        let candidate = connectionCandidates.get(candidateKey);
+        if (!candidate) {
+          candidate = {
+            directions: new Set(),
+            isEOL: false,
+            isCRIT: false,
+            containsPlaceholder: false,
+            firstDirection: null
+          };
+          connectionCandidates.set(candidateKey, candidate);
+        }
+        candidate.directions.add(`${systemFrom}|${systemTo}`);
+        candidate.isEOL = candidate.isEOL || isEOL;
+        candidate.isCRIT = candidate.isCRIT || isCRIT;
+        candidate.containsPlaceholder = candidate.containsPlaceholder || Boolean(targetInfo.isPlaceholder);
+        if (!candidate.firstDirection) {
+          candidate.firstDirection = { source: systemFrom, target: systemTo };
         }
 
         const sourceEntry = systems[systemFrom] || { name: systemFrom };
@@ -277,6 +368,10 @@ export function displayMap(data) {
         targetEntry.filterKey = targetInfo.filterKey || systemTo;
         targetEntry.isPlaceholder = targetInfo.isPlaceholder || false;
         targetEntry.originSystem = targetInfo.originSystem || systemTo;
+        if (targetEntry.isPlaceholder) {
+          const classFromTarget = targetInfo.wormholeClass || wormholeClassFromLabel || targetEntry.wormholeClass || null;
+          targetEntry.wormholeClass = classFromTarget ? classFromTarget.toUpperCase() : null;
+        }
         systems[systemTo] = targetEntry;
       }
     } else if (rawLabel.startsWith('@')) {
@@ -288,12 +383,52 @@ export function displayMap(data) {
     }
   });
 
-  console.log('systems:', systems);
-  console.log('connections:', connections);
-  console.log('statuses:', statuses);
+  connections = [];
+  connectionCandidates.forEach((candidate, key) => {
+    const hasBothDirections = candidate.directions.size >= 2;
+    if (!hasBothDirections && !candidate.containsPlaceholder) {
+      return;
+    }
+    const direction = candidate.firstDirection;
+    let source;
+    let target;
+    if (direction) {
+      source = direction.source;
+      target = direction.target;
+    } else {
+      const [first, second] = key.split('|');
+      source = first;
+      target = second;
+    }
+    if (!source || !target) {
+      return;
+    }
+    connections.push({
+      source,
+      target,
+      isEOL: candidate.isEOL,
+      isCRIT: candidate.isCRIT
+    });
+  });
 
-  const nodes = Object.values(systems);
-  const links = connections;
+  const connectedSystemNames = new Set();
+  connections.forEach((connection) => {
+    if (connection && connection.source) {
+      connectedSystemNames.add(connection.source);
+    }
+    if (connection && connection.target) {
+      connectedSystemNames.add(connection.target);
+    }
+  });
+
+  const nodes = Object.values(systems).filter((node) => connectedSystemNames.has(node.name));
+  const links = connections.filter((connection) => (
+    connectedSystemNames.has(connection.source) && connectedSystemNames.has(connection.target)
+  ));
+
+  console.log('systems:', systems);
+  console.log('connections:', links);
+  console.log('statuses:', statuses);
   const hasPreviousLayout = previousPositions.size > 0;
   const nodesByName = new Map(nodes.map((node) => [node.name, node]));
   const adjacency = new Map();
@@ -538,10 +673,16 @@ export function displayMap(data) {
       window.setSystemIntelActiveSystem(selectionKey);
     }
 
+    if (typeof filterBookmarksBySystem === 'function') {
+      filterBookmarksBySystem(selectionKey);
+    }
+
     closeSearchPanel();
 
     return true;
   }
+
+  window.__bookmarkViewerApplySystemSelection = applySystemSelection;
 
   function focusOnSystem(targetNode) {
     if (!targetNode) {
@@ -847,8 +988,20 @@ export function displayMap(data) {
 
   function updateCrosshair(d, classColors) {
     const systemInfo = systems[d.name] || (d.filterKey ? systems[d.filterKey] : null);
-    const wormholeClass = systemInfo ? systemInfo.wormholeClass : null;
-    const classColor = wormholeClass ? classColors[wormholeClass.toUpperCase()] : '#00ff00';
+    let wormholeClass = null;
+    if (d && d.wormholeClass) {
+      wormholeClass = d.wormholeClass;
+    } else if (systemInfo && systemInfo.wormholeClass) {
+      wormholeClass = systemInfo.wormholeClass;
+    }
+    if (wormholeClass && typeof wormholeClass === 'string') {
+      wormholeClass = wormholeClass.toUpperCase();
+    }
+    let classColor = wormholeClass ? classColors[wormholeClass] : null;
+    if (!classColor) {
+      const fallbackColor = getStatusColor(systemInfo || d);
+      classColor = fallbackColor || '#00ff00';
+    }
 
     d3.selectAll('.crosshair').remove();
 

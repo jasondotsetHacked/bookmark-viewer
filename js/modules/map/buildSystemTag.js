@@ -11,7 +11,8 @@ const classColors = {
     "C5": "#FF7F27",
     "C6": "#ED1C24",
     "THERA": "#FFFFFF",
-    "C13": "#7F7F7F"
+    "C13": "#7F7F7F",
+    "PV": "#FF9800"
 };
 
 export async function buildSystemTag(selection) {
@@ -22,8 +23,18 @@ export async function buildSystemTag(selection) {
         const lookupKey = d.name;
         const fallbackKey = d.filterKey || d.originSystem;
         const systemInfo = systemsData[lookupKey] || (fallbackKey ? systemsData[fallbackKey] : undefined);
-        let wormholeClass = systemInfo ? systemInfo.wormholeClass : null;
-        let classColor = wormholeClass ? classColors[wormholeClass.toUpperCase()] : null;
+        let wormholeClass = null;
+        let classColor = null;
+
+        if (d.isPlaceholder && d.wormholeClass) {
+            wormholeClass = (d.wormholeClass || '').toUpperCase();
+            classColor = classColors[wormholeClass] || null;
+        }
+
+        if (!wormholeClass && systemInfo && systemInfo.wormholeClass) {
+            wormholeClass = (systemInfo.wormholeClass || '').toUpperCase();
+            classColor = classColors[wormholeClass] || null;
+        }
 
         if (!wormholeClass && systemInfo && systemInfo.security_status !== undefined) {
             const secStatus = systemInfo.security_status;
@@ -34,7 +45,15 @@ export async function buildSystemTag(selection) {
             } else {
                 wormholeClass = 'NS';
             }
-            classColor = classColors[wormholeClass];
+            classColor = classColors[wormholeClass] || classColor;
+        }
+
+        if (!classColor && wormholeClass) {
+            classColor = classColors[wormholeClass] || classColor;
+        }
+
+        if (wormholeClass && (!d.wormholeClass || d.wormholeClass.toUpperCase() !== wormholeClass)) {
+            d.wormholeClass = wormholeClass;
         }
 
         const nicknameKey = d.filterKey || d.name;
@@ -51,8 +70,10 @@ export async function buildSystemTag(selection) {
 
         if (systemInfo && systemInfo.statics && !d.isPlaceholder) {
             Object.entries(systemInfo.statics).forEach(([staticName, staticInfo]) => {
-                const staticColor = classColors[staticInfo.class.toUpperCase()] || '#00ff00';
-                labels.push({ text: staticName, color: staticColor });
+                const staticClass = staticInfo && staticInfo.class ? staticInfo.class.toUpperCase() : '';
+                const staticColor = staticClass ? (classColors[staticClass] || '#00ff00') : '#00ff00';
+                const staticLabel = staticClass ? `${staticClass} ${staticName}` : staticName;
+                labels.push({ text: staticLabel, color: staticColor });
             });
         }
 
@@ -87,7 +108,13 @@ export async function buildSystemTag(selection) {
         function selectSystem() {
             const systemName = d.filterKey || d.name;
             console.log(`System ${systemName} selected`);
-            filterBookmarksBySystem(systemName);
+            let handled = false;
+            if (typeof window.__bookmarkViewerApplySystemSelection === 'function') {
+                handled = window.__bookmarkViewerApplySystemSelection(systemName) === true;
+            }
+            if (!handled) {
+                filterBookmarksBySystem(systemName);
+            }
         }
 
         g.on("click", function(event) {
