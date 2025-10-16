@@ -16,7 +16,10 @@ export function displayMap(data) {
   const statuses = {};
 
   if (typeof window.setSignatureActiveSystem === 'function') {
-    window.setSignatureActiveSystem(null, data);
+    window.setSignatureActiveSystem(null);
+  }
+  if (typeof window.setSystemIntelActiveSystem === 'function') {
+    window.setSystemIntelActiveSystem(null);
   }
 
   const classColors = {
@@ -320,7 +323,10 @@ export function displayMap(data) {
         displayTable(keys, data, d.name); // Filter table by selected system
         lockNodes(simulation, nodes); // Lock all nodes in place
         if (typeof window.setSignatureActiveSystem === 'function') {
-          window.setSignatureActiveSystem(d.name, data);
+          window.setSignatureActiveSystem(d.name);
+        }
+        if (typeof window.setSystemIntelActiveSystem === 'function') {
+          window.setSystemIntelActiveSystem(d.name);
         }
       }
     });
@@ -344,7 +350,10 @@ export function displayMap(data) {
       displayTable(keys, data); // Reset table filter
       lockNodes(simulation, nodes); // Lock all nodes in place
       if (typeof window.setSignatureActiveSystem === 'function') {
-        window.setSignatureActiveSystem(null, data);
+        window.setSignatureActiveSystem(null);
+      }
+      if (typeof window.setSystemIntelActiveSystem === 'function') {
+        window.setSystemIntelActiveSystem(null);
       }
     }
   });
@@ -410,7 +419,10 @@ function filterBookmarksBySystem(systemName) {
         const filteredData = data.filter(row => row['SOL'] === systemName);
         displayTable(['Label', 'Type', 'Jumps', 'SOL', 'CON', 'REG', 'Date', 'Expiry', 'Creator'], filteredData);
         if (typeof window.setSignatureActiveSystem === 'function') {
-            window.setSignatureActiveSystem(systemName, data);
+            window.setSignatureActiveSystem(systemName);
+        }
+        if (typeof window.setSystemIntelActiveSystem === 'function') {
+            window.setSystemIntelActiveSystem(systemName);
         }
     });
 }

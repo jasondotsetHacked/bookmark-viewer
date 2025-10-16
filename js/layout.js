@@ -1,12 +1,13 @@
 const GRID_SIZE = 36;
 const MIN_GRID_W = 8;
 const MIN_GRID_H = 6;
-const STORAGE_PREFIX = 'moduleLayout:v2:';
+const STORAGE_PREFIX = 'moduleLayout:v3:';
 
 const DEFAULT_LAYOUTS = {
-    map: { x: 0, y: 0, w: 18, h: 16 },
-    bookmarks: { x: 18, y: 0, w: 18, h: 18 },
-    signatures: { x: 0, y: 16, w: 14, h: 18 }
+    map: { x: 0, y: 0, w: 26, h: 18 },
+    bookmarks: { x: 0, y: 18, w: 24, h: 14 },
+    signatures: { x: 26, y: 0, w: 8, h: 26 },
+    intel: { x: 26, y: 26, w: 8, h: 8 }
 };
 
 const layoutState = new Map();
@@ -14,33 +15,47 @@ let containerBaseWidth = 0;
 let containerBaseHeight = 0;
 let activeInteraction = null;
 
+const MAX_LAYOUT_ATTEMPTS = 8;
+const MIN_MEASURE_WIDTH = GRID_SIZE * MIN_GRID_W;
+const MIN_MEASURE_HEIGHT = GRID_SIZE * MIN_GRID_H;
+
 function initModuleGrid() {
     const container = document.getElementById('moduleGrid');
     if (!container) {
         return;
     }
 
-    containerBaseWidth = container.clientWidth || 960;
-    containerBaseHeight = container.clientHeight || 480;
+    const overlay = document.getElementById('appLoader');
+    document.body.classList.add('layout-loading');
+    overlay?.classList.remove('loader-hidden');
 
     const modules = Array.from(container.querySelectorAll('.module'));
-    let fallbackIndex = 0;
+    let layoutApplied = false;
+    let attempts = 0;
 
-    modules.forEach((moduleEl, index) => {
-        const moduleId = moduleEl.getAttribute('data-module-id') || `module-${index}`;
-        moduleEl.dataset.moduleId = moduleId;
+    const attemptLayout = () => {
+        if (layoutApplied) {
+            return;
+        }
 
-        const storedLayout = loadLayout(moduleId);
-        const initialLayout = storedLayout || getDefaultLayout(moduleId, moduleEl, fallbackIndex++);
-        layoutState.set(moduleId, initialLayout);
-        applyLayout(moduleEl, initialLayout);
+        const measurement = measureContainer(container);
+        if (!measurement) {
+            attempts += 1;
+            if (attempts < MAX_LAYOUT_ATTEMPTS) {
+                requestAnimationFrame(attemptLayout);
+                return;
+            }
+        }
 
-        installMoveHandle(moduleEl, container, moduleId);
-        installResizeHandle(moduleEl, container, moduleId);
-    });
+        const finalMeasurement = measurement || getFallbackMeasurement();
+        applyInitialLayout(container, modules, finalMeasurement);
+        layoutApplied = true;
+        updateContainerExtents(container);
+        window.addEventListener('resize', () => enforceBounds(container));
+        finalizeLayoutLoader(overlay);
+    };
 
-    updateContainerExtents(container);
-    window.addEventListener('resize', () => enforceBounds(container));
+    requestAnimationFrame(attemptLayout);
 }
 
 function installMoveHandle(moduleEl, container, moduleId) {
@@ -251,7 +266,11 @@ function enforceBounds(container) {
     updateContainerExtents(container);
 }
 
-function getDefaultLayout(moduleId, moduleEl, fallbackIndex) {
+function getDefaultLayout(moduleId, moduleEl, fallbackIndex, responsiveDefaults = null) {
+    if (responsiveDefaults && responsiveDefaults[moduleId]) {
+        return { ...responsiveDefaults[moduleId] };
+    }
+
     if (DEFAULT_LAYOUTS[moduleId]) {
         return { ...DEFAULT_LAYOUTS[moduleId] };
     }
@@ -298,6 +317,82 @@ function saveLayout(moduleId, layout) {
     }
 }
 
+function measureContainer(container) {
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 960;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 720;
+    const rect = container.getBoundingClientRect();
+    const padding = 24;
+
+    const width = Math.max(rect.width, viewportWidth - rect.left - padding);
+    const height = Math.max(rect.height, viewportHeight - rect.top - padding);
+
+    if (width < MIN_MEASURE_WIDTH || height < MIN_MEASURE_HEIGHT) {
+        return null;
+    }
+
+    return {
+        width,
+        height
+    };
+}
+
+function getFallbackMeasurement() {
+    const fallbackWidth = Math.max(
+        MIN_MEASURE_WIDTH,
+        (window.innerWidth || document.documentElement.clientWidth || 1280) - 48
+    );
+    const fallbackHeight = Math.max(
+        MIN_MEASURE_HEIGHT,
+        (window.innerHeight || document.documentElement.clientHeight || 720) - 64
+    );
+    return {
+        width: fallbackWidth,
+        height: fallbackHeight
+    };
+}
+
+function applyInitialLayout(container, modules, measurement) {
+    containerBaseWidth = measurement.width;
+    containerBaseHeight = measurement.height;
+
+    const gridWidth = Math.max(Math.floor(containerBaseWidth / GRID_SIZE), MIN_GRID_W * 3);
+    const gridHeight = Math.max(Math.floor(containerBaseHeight / GRID_SIZE), MIN_GRID_H * 4);
+    const responsiveDefaults = calculateResponsiveDefaults(gridWidth, gridHeight);
+
+    let fallbackIndex = 0;
+
+    modules.forEach((moduleEl, index) => {
+        const moduleId = moduleEl.dataset.moduleId || moduleEl.getAttribute('data-module-id') || `module-${index}`;
+        moduleEl.dataset.moduleId = moduleId;
+
+        const storedLayout = loadLayout(moduleId);
+        const initialLayout = storedLayout || getDefaultLayout(moduleId, moduleEl, fallbackIndex++, responsiveDefaults);
+        layoutState.set(moduleId, initialLayout);
+        applyLayout(moduleEl, initialLayout);
+
+        if (!moduleEl.dataset.layoutBound) {
+            installMoveHandle(moduleEl, container, moduleId);
+            installResizeHandle(moduleEl, container, moduleId);
+            moduleEl.dataset.layoutBound = 'true';
+        }
+    });
+}
+
+function finalizeLayoutLoader(overlay) {
+    document.body.classList.remove('layout-loading');
+    if (!overlay) {
+        return;
+    }
+    requestAnimationFrame(() => {
+        overlay.classList.add('loader-hidden');
+        setTimeout(() => {
+            if (overlay.parentNode) {
+                overlay.parentNode.removeChild(overlay);
+            }
+        }, 450);
+    });
+}
+
 function roundToGrid(value) {
     return Math.round(value / GRID_SIZE) * GRID_SIZE;
 }
@@ -310,3 +405,55 @@ function clamp(value, min, max) {
 document.addEventListener('DOMContentLoaded', initModuleGrid);
 
 export { initModuleGrid };
+
+function calculateResponsiveDefaults(gridWidth, gridHeight) {
+    const gap = 1;
+    const effectiveWidth = Math.max(gridWidth, MIN_GRID_W * 4);
+    const effectiveHeight = Math.max(gridHeight, MIN_GRID_H * 5);
+
+    const sideWidth = Math.max(MIN_GRID_W, Math.round(effectiveWidth * 0.25));
+    const mainWidth = Math.max(MIN_GRID_W, effectiveWidth - sideWidth - gap);
+
+    const mapHeight = clamp(
+        Math.round(effectiveHeight * 0.58),
+        MIN_GRID_H * 2,
+        effectiveHeight - (MIN_GRID_H * 2 + gap)
+    );
+    const intelHeight = clamp(
+        Math.round(effectiveHeight * 0.18),
+        MIN_GRID_H,
+        effectiveHeight - MIN_GRID_H - gap
+    );
+    const signaturesHeight = Math.max(MIN_GRID_H, effectiveHeight - intelHeight - gap);
+    const bookmarksHeight = Math.max(MIN_GRID_H, effectiveHeight - mapHeight - gap);
+
+    const defaults = {
+        map: {
+            x: 0,
+            y: 0,
+            w: mainWidth,
+            h: mapHeight
+        },
+        bookmarks: {
+            x: 0,
+            y: mapHeight + gap,
+            w: mainWidth,
+            h: bookmarksHeight
+        },
+        signatures: {
+            x: mainWidth + gap,
+            y: 0,
+            w: sideWidth,
+            h: signaturesHeight
+        },
+        intel: {
+            x: mainWidth + gap,
+            y: signaturesHeight + gap,
+            w: sideWidth,
+            h: intelHeight
+        }
+    };
+
+    return defaults;
+}
+

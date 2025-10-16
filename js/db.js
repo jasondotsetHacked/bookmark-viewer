@@ -36,7 +36,10 @@ async function clearDatabase() {
         window.setSignatureBookmarkData([]);
     }
     if (typeof window.setSignatureActiveSystem === 'function') {
-        window.setSignatureActiveSystem(null, []);
+        window.setSignatureActiveSystem(null);
+    }
+    if (typeof window.setSystemIntelActiveSystem === 'function') {
+        window.setSystemIntelActiveSystem(null);
     }
 }
 

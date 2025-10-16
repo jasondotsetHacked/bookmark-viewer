@@ -13,6 +13,13 @@
 </head>
 
 <body>
+    <div id="appLoader" class="app-loader" role="status" aria-live="polite">
+        <div class="loader-core">
+            <div class="loader-ring"></div>
+            <div class="loader-pulse"></div>
+            <p class="loader-text">Initializing layout…</p>
+        </div>
+    </div>
     <header>
         <h1 id="title">setHacked Bookmark Viewer</h1>
         <div id="timestampDisplay" class="timestamp-display center-text">Data Timestamp: </div> <!-- Added center-text class -->
@@ -61,46 +68,28 @@
                     <div class="module-status" id="signatureActiveSystem">No system selected</div>
                 </header>
                 <div class="module-body signature-module">
-                    <div class="signature-input-group">
-                        <label for="signatureInput" class="signature-label">Paste signature scan results</label>
-                        <textarea id="signatureInput" class="signature-input" spellcheck="false" placeholder="PJJ-909	Cosmic Signature		0.0%	11.42 AU&#10;EFJ-844	Cosmic Signature		0.0%	5.87 AU&#10;ZXF-045	Cosmic Signature		0.0%	12.43 AU"></textarea>
-                        <div class="signature-actions">
-                            <button id="processSignatureButton" type="button">Apply</button>
-                            <button id="clearSignatureButton" type="button">Clear</button>
-                            <label class="signature-checkbox">
-                                <input type="checkbox" id="signatureAutoSync" checked>
-                                <span>Auto match</span>
-                            </label>
-                        </div>
+                    <div class="signature-controls">
+                        <button id="readSignaturesButton" type="button" disabled>Read Clipboard</button>
+                        <button id="clearSignaturesButton" type="button" disabled>Clear</button>
                     </div>
-                    <div class="signature-summary" id="signatureSummary">
-                        <div class="summary-card summary-missing">
-                            <strong id="summaryMissingCount">0</strong>
-                            <span>Need bookmarks</span>
-                        </div>
-                        <div class="summary-card summary-stale">
-                            <strong id="summaryStaleCount">0</strong>
-                            <span>Removable</span>
-                        </div>
-                        <div class="summary-card summary-matched">
-                            <strong id="summaryMatchedCount">0</strong>
-                            <span>Matched</span>
-                        </div>
+                    <div id="signatureMessage" class="signature-message" aria-live="assertive"></div>
+                    <div class="module-legend signature-legend">
+                        <span class="legend-item legend-missing">Needs scan</span>
+                        <span class="legend-item legend-stale">Removable</span>
+                        <span class="legend-item legend-matched">Matched</span>
                     </div>
-                    <div class="signature-results">
-                        <section>
-                            <h3>Needs Scan</h3>
-                            <ul id="missingSignaturesList" class="signature-list" aria-live="polite"></ul>
-                        </section>
-                        <section>
-                            <h3>Stale Bookmarks</h3>
-                            <ul id="staleBookmarksList" class="signature-list" aria-live="polite"></ul>
-                        </section>
-                        <section>
-                            <h3>Matches</h3>
-                            <ul id="matchedSignaturesList" class="signature-list" aria-live="polite"></ul>
-                        </section>
-                    </div>
+                    <div id="signatureTableContainer" class="module-scrollable signature-table-container" aria-live="polite"></div>
+                </div>
+                <div class="module-resize-handle" aria-hidden="true"></div>
+            </article>
+
+            <article class="module" data-module-id="intel" data-grid-w="5" data-grid-h="5">
+                <header class="module-header">
+                    <h2>System Intel</h2>
+                    <div class="module-status" id="intelActiveSystem">No system selected</div>
+                </header>
+                <div class="module-body intel-module">
+                    <textarea id="intelTextarea" class="intel-textarea" placeholder="Add intel for this system..." disabled></textarea>
                 </div>
                 <div class="module-resize-handle" aria-hidden="true"></div>
             </article>
@@ -131,6 +120,7 @@
     <script type="module" src="js/table.js"></script>
     <script type="module" src="js/layout.js"></script>
     <script type="module" src="js/signatures.js"></script>
+    <script type="module" src="js/intel.js"></script>
     <script type="module" src="js/map.js"></script>
     <script type="module" src="js/clipboard.js"></script>
     <script type="module" src="js/utils.js"></script>
