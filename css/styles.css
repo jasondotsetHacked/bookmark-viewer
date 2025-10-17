@@ -291,38 +291,49 @@ main {
     overflow: hidden;
 }
 
-.map-search-controls {
+.map-control-bar {
     position: absolute;
     top: 10px;
     right: 12px;
     display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 8px;
-    z-index: 10;
-    pointer-events: none;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.55);
+    border: 1px solid rgba(0, 255, 0, 0.35);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(4px);
+    z-index: 12;
 }
 
-.map-search-controls > * {
-    pointer-events: auto;
+.map-search-controls {
+    position: relative;
+    display: flex;
+    align-items: center;
 }
 
 .map-search-toggle {
-    width: 20px;
-    height: 20px;
-    border: none;
-    border-radius: 0;
-    background: transparent;
+    padding: 4px 14px;
+    border: 1px solid rgba(0, 255, 0, 0.45);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.6);
     color: #00ff00;
-    display: grid;
-    place-items: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     cursor: pointer;
-    transition: opacity 0.2s ease;
+    font-size: 0.85rem;
+    font-weight: 600;
+    line-height: 1.2;
+    transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
 }
 
 .map-search-toggle:hover,
 .map-search-toggle:focus {
-    opacity: 0.7;
+    background: rgba(0, 255, 0, 0.15);
+    color: #ccffcc;
+    transform: translateY(-1px);
 }
 
 .map-search-toggle:focus-visible {
@@ -330,11 +341,10 @@ main {
     outline-offset: 1px;
 }
 
-.map-search-toggle svg {
-    display: block;
-}
-
 .map-search-panel {
+    position: absolute;
+    top: calc(100% + 10px);
+    right: 0;
     display: grid;
     grid-template-columns: 1fr auto;
     gap: 6px;
@@ -344,12 +354,93 @@ main {
     border-radius: 8px;
     padding: 10px;
     box-shadow: 0 8px 22px rgba(0, 255, 0, 0.2);
-    width: clamp(220px, 20vw, 280px);
+    width: clamp(220px, 32vw, 320px);
     backdrop-filter: blur(6px);
+    z-index: 20;
 }
 
 .map-search-panel[hidden] {
     display: none !important;
+}
+
+.map-physics-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    color: rgba(0, 255, 0, 0.85);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    user-select: none;
+}
+
+.map-physics-input {
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+    pointer-events: none;
+}
+
+.map-physics-slider {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 18px;
+    border-radius: 999px;
+    border: 1px solid rgba(0, 255, 0, 0.35);
+    background: rgba(0, 255, 0, 0.14);
+    transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.map-physics-slider::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: rgba(0, 255, 0, 0.9);
+    box-shadow: 0 0 6px rgba(0, 255, 0, 0.45);
+    transition: transform 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.map-physics-toggle.is-active .map-physics-slider {
+    background: rgba(0, 255, 0, 0.34);
+    border-color: rgba(0, 255, 0, 0.7);
+    box-shadow: 0 0 12px rgba(0, 255, 0, 0.25);
+}
+
+.map-physics-toggle.is-active .map-physics-slider::after {
+    transform: translateX(16px);
+    background: #111;
+    box-shadow: 0 0 8px rgba(0, 255, 0, 0.65);
+}
+
+.map-physics-label {
+    font-size: 0.68rem;
+    letter-spacing: 0.2em;
+    color: rgba(0, 255, 0, 0.7);
+}
+
+.map-physics-status {
+    font-size: 0.64rem;
+    letter-spacing: 0.24em;
+    color: rgba(0, 255, 0, 0.45);
+    transition: color 0.2s ease;
+}
+
+.map-physics-toggle.is-active .map-physics-status {
+    color: #00ff9a;
+}
+
+.map-physics-toggle:focus-within .map-physics-slider {
+    outline: 2px solid rgba(0, 255, 0, 0.55);
+    outline-offset: 2px;
 }
 
 .map-search-input {

@@ -124,6 +124,7 @@ export function displayMap(data, options = {}) {
   }
   let previousPositions = new Map();
   let previousTransform = null;
+  let previousPhysicsEnabled = false;
 
   if (previousRuntime) {
     try {
@@ -151,6 +152,9 @@ export function displayMap(data, options = {}) {
       if (previousRuntime.currentTransform) {
         previousTransform = previousRuntime.currentTransform;
       }
+      if (typeof previousRuntime.physicsEnabled === 'boolean') {
+        previousPhysicsEnabled = previousRuntime.physicsEnabled;
+      }
     } catch (error) {
       console.warn('displayMap: failed to capture previous runtime state', error);
       previousPositions = new Map();
@@ -161,6 +165,9 @@ export function displayMap(data, options = {}) {
   mapContainer.__mapRuntime = null;
   mapContainer.innerHTML = '';
 
+  const controlBar = document.createElement('div');
+  controlBar.className = 'map-control-bar';
+
   const searchControls = document.createElement('div');
   searchControls.className = 'map-search-controls';
 
@@ -170,12 +177,7 @@ export function displayMap(data, options = {}) {
   searchToggle.setAttribute('aria-label', 'Search for a system');
   searchToggle.setAttribute('aria-expanded', 'false');
   searchToggle.title = 'Search systems';
-  searchToggle.innerHTML = `
-    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-      <circle cx="11" cy="11" r="8" stroke="currentColor" fill="none" stroke-width="2"/>
-      <path d="m21 21-4.35-4.35" stroke="currentColor" stroke-width="2"/>
-    </svg>
-  `;
+  searchToggle.textContent = 'Search';
 
   const searchPanel = document.createElement('div');
   searchPanel.className = 'map-search-panel';
@@ -208,7 +210,50 @@ export function displayMap(data, options = {}) {
 
   searchPanel.append(searchInput, searchSubmit, searchSuggestions, searchMessage);
   searchControls.append(searchToggle, searchPanel);
-  mapContainer.appendChild(searchControls);
+  controlBar.appendChild(searchControls);
+
+  const physicsToggle = document.createElement('label');
+  physicsToggle.className = 'map-physics-toggle';
+  physicsToggle.title = 'Toggle map physics';
+
+  const physicsToggleInput = document.createElement('input');
+  physicsToggleInput.type = 'checkbox';
+  physicsToggleInput.className = 'map-physics-input';
+  physicsToggleInput.setAttribute('aria-label', 'Toggle map physics simulation');
+  physicsToggleInput.checked = previousPhysicsEnabled;
+
+  const physicsToggleSlider = document.createElement('span');
+  physicsToggleSlider.className = 'map-physics-slider';
+
+  const physicsToggleText = document.createElement('span');
+  physicsToggleText.className = 'map-physics-label';
+  physicsToggleText.textContent = 'Physics';
+
+  const physicsToggleStatus = document.createElement('span');
+  physicsToggleStatus.className = 'map-physics-status';
+  physicsToggleStatus.textContent = previousPhysicsEnabled ? 'On' : 'Off';
+
+  physicsToggle.append(physicsToggleInput, physicsToggleSlider, physicsToggleText, physicsToggleStatus);
+  controlBar.appendChild(physicsToggle);
+
+  mapContainer.appendChild(controlBar);
+
+  const stopControlBarEventPropagation = (event) => {
+    event.stopPropagation();
+  };
+  ['click', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend'].forEach((eventName) => {
+    controlBar.addEventListener(eventName, stopControlBarEventPropagation);
+  });
+
+  const setPhysicsToggleVisualState = (enabled) => {
+    physicsToggle.classList.toggle('is-active', enabled);
+    physicsToggle.setAttribute('data-state', enabled ? 'on' : 'off');
+    physicsToggleStatus.textContent = enabled ? 'On' : 'Off';
+    physicsToggleInput.checked = enabled;
+  };
+
+  setPhysicsToggleVisualState(previousPhysicsEnabled);
+  let desiredPhysicsEnabled = previousPhysicsEnabled;
 
   const searchContext = {
     controls: searchControls,
@@ -721,7 +766,41 @@ export function displayMap(data, options = {}) {
     simulation: null,
     nodes,
     currentTransform,
-    settleTimer: null
+    settleTimer: null,
+    physicsEnabled: desiredPhysicsEnabled
+  };
+
+  const syncPhysicsSimulation = () => {
+    const sim = runtimeState.simulation;
+    if (!sim) {
+      return;
+    }
+
+    if (runtimeState.physicsEnabled) {
+      if (runtimeState.settleTimer) {
+        clearTimeout(runtimeState.settleTimer);
+        runtimeState.settleTimer = null;
+      }
+      unlockNodes(runtimeState.nodes);
+      sim.alpha(0.65).alphaTarget(0.08).restart();
+    } else {
+      lockNodes(sim, runtimeState.nodes);
+      runtimeState.settleTimer = null;
+    }
+  };
+
+  physicsToggleInput.addEventListener('change', (event) => {
+    desiredPhysicsEnabled = !!event.target.checked;
+    runtimeState.physicsEnabled = desiredPhysicsEnabled;
+    setPhysicsToggleVisualState(desiredPhysicsEnabled);
+    syncPhysicsSimulation();
+  });
+
+  window.__bookmarkViewerSetPhysicsEnabled = (value) => {
+    desiredPhysicsEnabled = !!value;
+    runtimeState.physicsEnabled = desiredPhysicsEnabled;
+    setPhysicsToggleVisualState(desiredPhysicsEnabled);
+    syncPhysicsSimulation();
   };
 
   const zoom = d3.zoom()
@@ -1222,7 +1301,7 @@ export function displayMap(data, options = {}) {
     const keys = ['Label', 'Type', 'Jumps', 'SOL', 'CON', 'REG', 'Date', 'Expiry', 'Creator'];
     displayTable(keys, data, selectionKey);
     window.__bookmarkViewerSelectedSystem = selectionKey;
-    lockNodes(simulation, nodes);
+    syncPhysicsSimulation();
 
     if (typeof window.setSignatureActiveSystem === 'function') {
       window.setSignatureActiveSystem(selectionKey);
@@ -1357,6 +1436,9 @@ export function displayMap(data, options = {}) {
       }
     });
 
+  const crosshairLayer = g.append('g')
+    .attr('class', 'crosshair-layer');
+
   const simulation = d3.forceSimulation(nodes)
     .force('link', d3.forceLink(links).id((d) => d.name).distance(100))
     .force('charge', d3.forceManyBody().strength(-50))
@@ -1371,16 +1453,22 @@ export function displayMap(data, options = {}) {
   runtimeState.simulation = simulation;
   runtimeState.nodes = nodes;
   mapContainer.__mapRuntime = runtimeState;
-  const settleDelay = 200;
-  // Let the physics engine settle briefly so new systems space out, then freeze the layout.
-  const settleTimer = setTimeout(() => {
-    if (mapContainer.__mapRuntime !== runtimeState) {
-      return;
-    }
-    lockNodes(simulation, nodes);
-    runtimeState.settleTimer = null;
-  }, settleDelay);
-  runtimeState.settleTimer = settleTimer;
+  if (runtimeState.physicsEnabled) {
+    syncPhysicsSimulation();
+  } else {
+    const settleDelay = 200;
+    // Let the physics engine settle briefly so new systems space out, then freeze the layout.
+    const settleTimer = setTimeout(() => {
+      if (mapContainer.__mapRuntime !== runtimeState) {
+        return;
+      }
+      if (!runtimeState.physicsEnabled) {
+        lockNodes(simulation, nodes);
+      }
+      runtimeState.settleTimer = null;
+    }, settleDelay);
+    runtimeState.settleTimer = settleTimer;
+  }
 
   const updateViewportSize = (nextWidth, nextHeight) => {
     if (!nextWidth || !nextHeight) {
@@ -1406,7 +1494,7 @@ export function displayMap(data, options = {}) {
 
     simulation.alpha(0.3).restart();
     svg.call(zoom.transform, currentTransform);
-    g.selectAll('.crosshair').remove();
+    crosshairLayer.selectAll('.crosshair').remove();
 
     const activeSelection = window.__bookmarkViewerSelectedSystem;
     if (activeSelection) {
@@ -1522,7 +1610,7 @@ export function displayMap(data, options = {}) {
       .on('end', (event, d) => {
         if (event.sourceEvent.button === 0) { // Left-click for dragging nodes
           dragEnded(event, d, simulation);
-          lockNodes(simulation, nodes); // Lock nodes after dragging ends
+          syncPhysicsSimulation(); // Reapply physics state after dragging ends
         }
       }))
     .on('click', (event, d) => {
@@ -1537,11 +1625,11 @@ export function displayMap(data, options = {}) {
       resetNodeStyles();
 
       // Remove existing crosshair
-      d3.selectAll('.crosshair').remove();
+      crosshairLayer.selectAll('.crosshair').remove();
 
       const keys = ['Label', 'Type', 'Jumps', 'SOL', 'CON', 'REG', 'Date', 'Expiry', 'Creator']; // Define keys
       displayTable(keys, data); // Reset table filter
-      lockNodes(simulation, nodes); // Lock all nodes in place
+      syncPhysicsSimulation(); // Reapply physics mode after clearing selection
       if (typeof window.setSignatureActiveSystem === 'function') {
         window.setSignatureActiveSystem(null);
       }
@@ -1601,6 +1689,14 @@ export function displayMap(data, options = {}) {
       .attr('cy', (d) => d.y);
 
     labels.attr('transform', (d) => `translate(${d.x},${d.y})`);
+
+    // Update crosshair position if a system is selected
+    if (window.__bookmarkViewerSelectedSystem) {
+      const selectedNode = nodes.find(n => (n.filterKey || n.name) === window.__bookmarkViewerSelectedSystem);
+      if (selectedNode) {
+        updateCrosshair(selectedNode, classColors);
+      }
+    }
   }
 
   function updateCrosshair(d, classColors) {
@@ -1620,9 +1716,21 @@ export function displayMap(data, options = {}) {
       classColor = fallbackColor || '#00ff00';
     }
 
-    d3.selectAll('.crosshair').remove();
+    const crosshairLines = crosshairLayer.selectAll('.crosshair');
+    if (crosshairLines.size() === 2) {
+      // Update existing crosshair positions
+      const lines = crosshairLines.nodes();
+      lines[0].setAttribute('y1', d.y);
+      lines[0].setAttribute('y2', d.y);
+      lines[1].setAttribute('x1', d.x);
+      lines[1].setAttribute('x2', d.x);
+      return;
+    }
 
-    g.append('line')
+    // Remove any existing and create new
+    crosshairLayer.selectAll('.crosshair').remove();
+
+    crosshairLayer.append('line')
       .attr('class', 'crosshair')
       .attr('x1', -100000)
       .attr('y1', d.y)
@@ -1630,10 +1738,9 @@ export function displayMap(data, options = {}) {
       .attr('y2', d.y)
       .attr('stroke', classColor)
       .attr('stroke-width', 1)
-      .attr('stroke-dasharray', '5,5')
-      .lower();
+      .attr('stroke-dasharray', '5,5');
 
-    g.append('line')
+    crosshairLayer.append('line')
       .attr('class', 'crosshair')
       .attr('x1', d.x)
       .attr('y1', -100000)
@@ -1641,13 +1748,12 @@ export function displayMap(data, options = {}) {
       .attr('y2', 100000)
       .attr('stroke', classColor)
       .attr('stroke-width', 1)
-      .attr('stroke-dasharray', '5,5')
-      .lower();
+      .attr('stroke-dasharray', '5,5');
   }
 
-  // Lock nodes on any interaction
-  svg.on('mousedown', () => lockNodes(simulation, nodes));
-  svg.on('touchstart', () => lockNodes(simulation, nodes));
+  // Reapply physics mode on interaction
+  svg.on('mousedown', () => syncPhysicsSimulation());
+  svg.on('touchstart', () => syncPhysicsSimulation());
 }
 
 function updateNicknameLabel(labelSelection, nicknameValue) {
