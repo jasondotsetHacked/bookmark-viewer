@@ -89,6 +89,9 @@ function buildBody(rows) {
                         tag: TIMER_TAGS.TABLE,
                         style: 'default'
                     });
+                } else if (key === 'Label') {
+                    td.classList.add('bookmark-label-cell');
+                    td.textContent = row[key] || '';
                 } else if (key === 'Expiry') {
                     td.textContent = row[key] ? row[key] : '—';
                 } else {

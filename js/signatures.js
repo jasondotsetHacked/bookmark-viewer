@@ -1,5 +1,7 @@
 import { loadSystemsData } from './loadSystemsData.js';
 const SIGNATURE_DATA_KEY = 'signatureModule:systemSignatures:v1';
+const HISTORY_VERSION_SOURCE_CLIPBOARD = 'clipboard';
+const HISTORY_VERSION_SOURCE_CLEAR = 'clear';
 
 const TRACKABLE_LABEL_PATTERNS = [
     /^--\s*[A-Z0-9]{3}/i,
@@ -12,6 +14,13 @@ const STATUS_LABELS = {
     stale: 'Removable',
     matched: 'Matched'
 };
+
+const SIGNATURE_OVERRIDE = {
+    AUTO: 'auto',
+    FORCE_ON: 'forceOn',
+    FORCE_OFF: 'forceOff'
+};
+const VALID_OVERRIDE_STATES = new Set(Object.values(SIGNATURE_OVERRIDE));
 
 let systemsDataPromise = null;
 let systemsDataCache = null;
@@ -33,6 +42,8 @@ const signatureState = {
 const signatureDom = {
     readButton: null,
     clearButton: null,
+    historyBackButton: null,
+    historyForwardButton: null,
     tableContainer: null,
     statusLabel: null,
     message: null,
@@ -50,6 +61,8 @@ document.addEventListener('DOMContentLoaded', initSignatureModule);
 function initSignatureModule() {
     signatureDom.readButton = document.getElementById('readSignaturesButton');
     signatureDom.clearButton = document.getElementById('clearSignaturesButton');
+    signatureDom.historyBackButton = document.getElementById('signatureHistoryBackButton');
+    signatureDom.historyForwardButton = document.getElementById('signatureHistoryForwardButton');
     signatureDom.tableContainer = document.getElementById('signatureTableContainer');
     signatureDom.statusLabel = document.getElementById('signatureActiveSystem');
     signatureDom.message = document.getElementById('signatureMessage');
@@ -67,6 +80,12 @@ function initSignatureModule() {
 
     signatureDom.readButton.addEventListener('click', handleReadSignatures);
     signatureDom.clearButton.addEventListener('click', handleClearSignatures);
+    if (signatureDom.historyBackButton) {
+        signatureDom.historyBackButton.addEventListener('click', handleSignatureHistoryBack);
+    }
+    if (signatureDom.historyForwardButton) {
+        signatureDom.historyForwardButton.addEventListener('click', handleSignatureHistoryForward);
+    }
 
     wireTutorialModal();
     updateSignatureUI();
@@ -80,15 +99,10 @@ function loadStoredSignatures() {
         }
         const parsed = JSON.parse(raw);
         const map = new Map();
-        Object.entries(parsed).forEach(([system, values]) => {
-            if (!Array.isArray(values)) {
-                return;
-            }
-            const normalized = values
-                .map((entry) => normalizeStoredSignature(entry))
-                .filter(Boolean);
-            if (normalized.length > 0) {
-                map.set(system, normalized);
+        Object.entries(parsed || {}).forEach(([system, value]) => {
+            const history = normalizeSystemHistory(value);
+            if (history.versions.length > 0 || history.currentIndex >= 0 || history.overrides.size > 0) {
+                map.set(system, history);
             }
         });
         return map;
@@ -101,8 +115,14 @@ function loadStoredSignatures() {
 function persistSignatures() {
     try {
         const payload = {};
-        signatureState.perSystem.forEach((signatures, system) => {
-            payload[system] = signatures.map((signature) => signature.signatureId);
+        signatureState.perSystem.forEach((history, system) => {
+            if (!history || !Array.isArray(history.versions)) {
+                return;
+            }
+            const serialized = serializeSystemHistory(history);
+            if (serialized) {
+                payload[system] = serialized;
+            }
         });
         localStorage.setItem(SIGNATURE_DATA_KEY, JSON.stringify(payload));
     } catch (error) {
@@ -114,13 +134,454 @@ function normalizeStoredSignature(entry) {
     if (!entry) {
         return null;
     }
+    let normalized = null;
     if (typeof entry === 'string') {
-        return toSignatureObject(entry);
+        normalized = toSignatureObject(entry);
+    } else if (typeof entry.signatureId === 'string') {
+        normalized = toSignatureObject(entry.signatureId, entry);
     }
-    if (typeof entry.signatureId === 'string') {
-        return toSignatureObject(entry.signatureId);
+    if (!normalized) {
+        return null;
     }
-    return null;
+    if (Array.isArray(normalized.rawColumns)) {
+        normalized.rawColumns = [...normalized.rawColumns];
+    } else if (normalized.rawColumns && !Array.isArray(normalized.rawColumns)) {
+        delete normalized.rawColumns;
+    }
+    return normalized;
+}
+
+function createEmptySystemHistory() {
+    return {
+        versions: [],
+        currentIndex: -1,
+        overrides: new Map()
+    };
+}
+
+function normalizeSystemHistory(value) {
+    const history = createEmptySystemHistory();
+
+    if (!value) {
+        return history;
+    }
+
+    if (Array.isArray(value)) {
+        const signatures = sanitizeSignatureList(value);
+        const version = createHistoryVersion(signatures, { source: HISTORY_VERSION_SOURCE_CLIPBOARD });
+        history.versions = [version];
+        history.currentIndex = history.versions.length - 1;
+        return history;
+    }
+
+    if (typeof value === 'object') {
+        const rawVersions = Array.isArray(value.versions)
+            ? value.versions
+            : Array.isArray(value.history)
+                ? value.history
+                : null;
+
+        if (rawVersions) {
+            rawVersions.forEach((entry) => {
+                const version = normalizeHistoryVersion(entry);
+                if (version) {
+                    history.versions.push(version);
+                }
+            });
+        } else if (Array.isArray(value.signatures)) {
+            const version = createHistoryVersion(value.signatures, {
+                id: typeof value.id === 'string' ? value.id : null,
+                timestamp: typeof value.timestamp === 'number' ? value.timestamp : Date.now(),
+                source: typeof value.source === 'string' ? value.source : HISTORY_VERSION_SOURCE_CLIPBOARD
+            });
+            history.versions.push(version);
+        }
+
+        if (history.versions.length > 0) {
+            const storedIndex = Number.isInteger(value.currentIndex)
+                ? Number(value.currentIndex)
+                : history.versions.length - 1;
+            history.currentIndex = Math.min(Math.max(storedIndex, 0), history.versions.length - 1);
+        }
+
+        history.overrides = normalizeOverrideMap(value.overrides);
+        return history;
+    }
+
+    return history;
+}
+
+function normalizeHistoryVersion(entry) {
+    if (!entry) {
+        return null;
+    }
+    if (Array.isArray(entry)) {
+        return createHistoryVersion(entry, { source: HISTORY_VERSION_SOURCE_CLIPBOARD });
+    }
+    const signatures = Array.isArray(entry.signatures)
+        ? entry.signatures
+        : Array.isArray(entry.data)
+            ? entry.data
+            : Array.isArray(entry.items)
+                ? entry.items
+                : Array.isArray(entry.entries)
+                    ? entry.entries
+                    : Array.isArray(entry.signatureIds)
+                        ? entry.signatureIds
+                        : [];
+    return createHistoryVersion(signatures, {
+        id: typeof entry.id === 'string' ? entry.id : null,
+        timestamp: typeof entry.timestamp === 'number' ? entry.timestamp : Date.now(),
+        source: typeof entry.source === 'string' ? entry.source : HISTORY_VERSION_SOURCE_CLIPBOARD
+    });
+}
+
+function normalizeOverrideMap(rawOverrides) {
+    if (!rawOverrides) {
+        return new Map();
+    }
+    if (rawOverrides instanceof Map) {
+        const map = new Map();
+        rawOverrides.forEach((value, key) => {
+            if (
+                typeof key === 'string' &&
+                typeof value === 'string' &&
+                value !== SIGNATURE_OVERRIDE.AUTO &&
+                VALID_OVERRIDE_STATES.has(value)
+            ) {
+                map.set(key, value);
+            }
+        });
+        return map;
+    }
+    const map = new Map();
+    if (typeof rawOverrides === 'object') {
+        Object.entries(rawOverrides).forEach(([key, value]) => {
+            if (
+                typeof key === 'string' &&
+                typeof value === 'string' &&
+                value !== SIGNATURE_OVERRIDE.AUTO &&
+                VALID_OVERRIDE_STATES.has(value)
+            ) {
+                map.set(key, value);
+            }
+        });
+    }
+    return map;
+}
+
+function sanitizeSignatureList(signatures) {
+    if (!Array.isArray(signatures)) {
+        return [];
+    }
+    return signatures
+        .map((entry) => normalizeStoredSignature(entry))
+        .filter(Boolean);
+}
+
+function cloneSignatureList(signatures) {
+    return sanitizeSignatureList(signatures);
+}
+
+function createHistoryVersion(signatures, { id = null, timestamp = Date.now(), source = HISTORY_VERSION_SOURCE_CLIPBOARD } = {}) {
+    const normalizedSignatures = sanitizeSignatureList(signatures);
+    return {
+        id: id || generateHistoryVersionId(),
+        timestamp,
+        source,
+        signatures: normalizedSignatures
+    };
+}
+
+function generateHistoryVersionId() {
+    return `v${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function serializeSystemHistory(history) {
+    if (!history) {
+        return null;
+    }
+    const versions = Array.isArray(history.versions) ? history.versions : [];
+    const serializedVersions = versions.map((version) => ({
+        id: typeof version.id === 'string' ? version.id : generateHistoryVersionId(),
+        timestamp: typeof version.timestamp === 'number' ? version.timestamp : Date.now(),
+        source: typeof version.source === 'string' ? version.source : HISTORY_VERSION_SOURCE_CLIPBOARD,
+        signatures: sanitizeSignatureList(version.signatures)
+    }));
+    if (serializedVersions.length === 0 && getOverrideSize(history.overrides) === 0) {
+        return null;
+    }
+
+    const normalizedIndex = serializedVersions.length === 0
+        ? -1
+        : Math.min(
+            Math.max(
+                Number.isInteger(history.currentIndex) ? Number(history.currentIndex) : serializedVersions.length - 1,
+                0
+            ),
+            serializedVersions.length - 1
+        );
+
+    return {
+        currentIndex: normalizedIndex,
+        versions: serializedVersions,
+        overrides: overridesMapToObject(history.overrides)
+    };
+}
+
+function overridesMapToObject(overrides) {
+    if (!overrides) {
+        return {};
+    }
+    if (overrides instanceof Map) {
+        const result = {};
+        overrides.forEach((value, key) => {
+            if (
+                typeof key === 'string' &&
+                typeof value === 'string' &&
+                value !== SIGNATURE_OVERRIDE.AUTO &&
+                VALID_OVERRIDE_STATES.has(value)
+            ) {
+                result[key] = value;
+            }
+        });
+        return result;
+    }
+    if (typeof overrides === 'object') {
+        const result = {};
+        Object.entries(overrides).forEach(([key, value]) => {
+            if (
+                typeof key === 'string' &&
+                typeof value === 'string' &&
+                value !== SIGNATURE_OVERRIDE.AUTO &&
+                VALID_OVERRIDE_STATES.has(value)
+            ) {
+                result[key] = value;
+            }
+        });
+        return result;
+    }
+    return {};
+}
+
+function getOverrideSize(overrides) {
+    if (!overrides) {
+        return 0;
+    }
+    if (overrides instanceof Map) {
+        return overrides.size;
+    }
+    if (typeof overrides === 'object') {
+        return Object.keys(overrides).length;
+    }
+    return 0;
+}
+
+function getSystemHistory(system, { createIfMissing = false } = {}) {
+    if (!system) {
+        return null;
+    }
+    let history = signatureState.perSystem.get(system);
+    if (!history && createIfMissing) {
+        history = createEmptySystemHistory();
+        signatureState.perSystem.set(system, history);
+    }
+    if (!history) {
+        return null;
+    }
+    if (!Array.isArray(history.versions)) {
+        history.versions = [];
+    }
+    if (!(history.overrides instanceof Map)) {
+        history.overrides = normalizeOverrideMap(history.overrides);
+    }
+    if (!Number.isInteger(history.currentIndex)) {
+        history.currentIndex = history.versions.length > 0 ? history.versions.length - 1 : -1;
+    } else if (history.versions.length === 0) {
+        history.currentIndex = -1;
+    } else {
+        history.currentIndex = Math.min(
+            Math.max(history.currentIndex, 0),
+            history.versions.length - 1
+        );
+    }
+    return history;
+}
+
+function pushSystemVersion(system, signatures, source = HISTORY_VERSION_SOURCE_CLIPBOARD) {
+    if (!system) {
+        return { index: -1, version: null };
+    }
+    const history = getSystemHistory(system, { createIfMissing: true });
+    const branchStart = Math.max(history.currentIndex, -1);
+    const retainedVersions = history.versions.slice(0, branchStart + 1);
+    const version = createHistoryVersion(signatures, { source });
+    retainedVersions.push(version);
+    history.versions = retainedVersions;
+    const newIndex = retainedVersions.length - 1;
+    history.currentIndex = newIndex;
+    pruneOverridesForSystem(system, history);
+    signatureState.perSystem.set(system, history);
+    return { index: newIndex, version };
+}
+
+function applyHistoryIndex(system, index) {
+    if (!system) {
+        signatureState.signatures = [];
+        return null;
+    }
+    const history = getSystemHistory(system);
+    if (!history || history.versions.length === 0) {
+        signatureState.signatures = [];
+        return null;
+    }
+    const boundedIndex = Math.min(Math.max(index, 0), history.versions.length - 1);
+    history.currentIndex = boundedIndex;
+    signatureState.perSystem.set(system, history);
+    const version = history.versions[boundedIndex];
+    signatureState.signatures = cloneSignatureList(version.signatures);
+    return version;
+}
+
+function getHistoryNavigationState(system) {
+    const history = getSystemHistory(system);
+    if (!history || history.versions.length === 0 || history.currentIndex < 0) {
+        return { hasBack: false, hasForward: false };
+    }
+    return {
+        hasBack: history.currentIndex > 0,
+        hasForward: history.currentIndex < history.versions.length - 1
+    };
+}
+
+function describeSignatureCount(count) {
+    return `${count} signature${count === 1 ? '' : 's'}`;
+}
+
+function formatHistoryActionMessage(action, version) {
+    if (!version) {
+        return `${action} to empty signature set.`;
+    }
+    const count = version.signatures ? version.signatures.length : 0;
+    return `${action} to ${describeSignatureCount(count)}.`;
+}
+
+function pruneOverridesForSystem(system, history = null) {
+    if (!system) {
+        return;
+    }
+    const targetHistory = history || getSystemHistory(system);
+    if (!targetHistory || !(targetHistory.overrides instanceof Map) || targetHistory.overrides.size === 0) {
+        return;
+    }
+    const knownIds = new Set();
+    targetHistory.versions.forEach((version) => {
+        (version?.signatures || []).forEach((signature) => {
+            if (signature && typeof signature.signatureId === 'string') {
+                knownIds.add(signature.signatureId);
+            }
+        });
+    });
+    if (knownIds.size === 0) {
+        targetHistory.overrides.clear();
+        signatureState.perSystem.set(system, targetHistory);
+        return;
+    }
+    let removed = false;
+    targetHistory.overrides.forEach((_, key) => {
+        if (!knownIds.has(key)) {
+            targetHistory.overrides.delete(key);
+            removed = true;
+        }
+    });
+    if (removed) {
+        signatureState.perSystem.set(system, targetHistory);
+    }
+}
+
+function getSignatureOverrideState(system, signatureId) {
+    if (!system || !signatureId) {
+        return SIGNATURE_OVERRIDE.AUTO;
+    }
+    const history = getSystemHistory(system);
+    if (!history || !(history.overrides instanceof Map)) {
+        return SIGNATURE_OVERRIDE.AUTO;
+    }
+    const state = history.overrides.get(signatureId);
+    if (typeof state !== 'string' || !VALID_OVERRIDE_STATES.has(state)) {
+        return SIGNATURE_OVERRIDE.AUTO;
+    }
+    return state;
+}
+
+function cycleSignatureOverrideState(system, signatureId) {
+    if (!system || !signatureId) {
+        return SIGNATURE_OVERRIDE.AUTO;
+    }
+    const history = getSystemHistory(system, { createIfMissing: true });
+    if (!(history.overrides instanceof Map)) {
+        history.overrides = new Map();
+    }
+    const current = getSignatureOverrideState(system, signatureId);
+    let nextState;
+    if (current === SIGNATURE_OVERRIDE.AUTO) {
+        nextState = SIGNATURE_OVERRIDE.FORCE_ON;
+    } else if (current === SIGNATURE_OVERRIDE.FORCE_ON) {
+        nextState = SIGNATURE_OVERRIDE.FORCE_OFF;
+    } else {
+        nextState = SIGNATURE_OVERRIDE.AUTO;
+    }
+    if (nextState === SIGNATURE_OVERRIDE.AUTO) {
+        history.overrides.delete(signatureId);
+    } else {
+        history.overrides.set(signatureId, nextState);
+    }
+    signatureState.perSystem.set(system, history);
+    return nextState;
+}
+
+function applyOverrideToDetection(autoDetection, overrideState) {
+    if (overrideState === SIGNATURE_OVERRIDE.FORCE_ON) {
+        return true;
+    }
+    if (overrideState === SIGNATURE_OVERRIDE.FORCE_OFF) {
+        return false;
+    }
+    return Boolean(autoDetection);
+}
+
+function resolveOverrideLabel(state) {
+    switch (state) {
+        case SIGNATURE_OVERRIDE.FORCE_ON:
+            return 'On';
+        case SIGNATURE_OVERRIDE.FORCE_OFF:
+            return 'Off';
+        default:
+            return 'Auto';
+    }
+}
+
+function resolveOverrideTooltip(state) {
+    switch (state) {
+        case SIGNATURE_OVERRIDE.FORCE_ON:
+            return 'Actions forced on for this signature. Click to hide or revert.';
+        case SIGNATURE_OVERRIDE.FORCE_OFF:
+            return 'Actions hidden for this signature. Click to return to auto.';
+        default:
+            return 'Actions follow automatic detection. Click to force on.';
+    }
+}
+
+function formatOverrideToggleMessage(signatureId, state) {
+    const suffix = signatureId ? ` for ${signatureId}` : '';
+    switch (state) {
+        case SIGNATURE_OVERRIDE.FORCE_ON:
+            return `Actions enabled${suffix}.`;
+        case SIGNATURE_OVERRIDE.FORCE_OFF:
+            return `Actions hidden${suffix}.`;
+        default:
+            return `Actions reverted to auto detection${suffix}.`;
+    }
 }
 
 function toSignatureObject(value, metadata = {}) {
@@ -156,14 +617,22 @@ async function handleReadSignatures() {
     try {
         const clipboardText = await navigator.clipboard.readText();
         const parsed = parseClipboardSignatures(clipboardText);
-        if (parsed.length === 0) {
+        const normalized = sanitizeSignatureList(parsed);
+        if (normalized.length === 0) {
             showSignatureMessage('Clipboard did not contain recognizable signatures.', true);
             return;
         }
-        signatureState.perSystem.set(signatureState.currentSystem, parsed);
+        const { index } = pushSystemVersion(
+            signatureState.currentSystem,
+            normalized,
+            HISTORY_VERSION_SOURCE_CLIPBOARD
+        );
+        const version = applyHistoryIndex(signatureState.currentSystem, index);
         persistSignatures();
-        signatureState.signatures = parsed;
-        showSignatureMessage(`Loaded ${parsed.length} signatures from clipboard.`);
+        const count = version && Array.isArray(version.signatures) ? version.signatures.length : 0;
+        const navigationState = getHistoryNavigationState(signatureState.currentSystem);
+        const revertHint = navigationState.hasBack ? ' Use Back to revert.' : '';
+        showSignatureMessage(`Loaded ${describeSignatureCount(count)} from clipboard.${revertHint}`);
         runSignatureAnalysis();
     } catch (error) {
         console.error('Failed to read signatures from clipboard', error);
@@ -176,14 +645,62 @@ function handleClearSignatures() {
     if (!system) {
         return;
     }
-    if (!signatureState.perSystem.has(system)) {
+    const history = getSystemHistory(system);
+    const activeVersion = history && history.currentIndex >= 0 ? history.versions[history.currentIndex] : null;
+    const activeCount = activeVersion && Array.isArray(activeVersion.signatures)
+        ? activeVersion.signatures.length
+        : 0;
+    if (!history || history.versions.length === 0 || activeCount === 0) {
         showSignatureMessage('No stored signatures to clear for this system.', true);
         return;
     }
-    signatureState.perSystem.delete(system);
+    const { index } = pushSystemVersion(system, [], HISTORY_VERSION_SOURCE_CLEAR);
+    applyHistoryIndex(system, index);
     persistSignatures();
     signatureState.signatures = [];
-    showSignatureMessage('Removed stored signatures for this system.');
+    showSignatureMessage('Signatures cleared. Use Back to restore a previous set.');
+    runSignatureAnalysis();
+}
+
+function handleSignatureHistoryBack() {
+    const system = signatureState.currentSystem;
+    if (!system) {
+        return;
+    }
+    const history = getSystemHistory(system);
+    if (!history || history.currentIndex <= 0) {
+        return;
+    }
+    const version = applyHistoryIndex(system, history.currentIndex - 1);
+    persistSignatures();
+    showSignatureMessage(formatHistoryActionMessage('Reverted', version));
+    runSignatureAnalysis();
+}
+
+function handleSignatureHistoryForward() {
+    const system = signatureState.currentSystem;
+    if (!system) {
+        return;
+    }
+    const history = getSystemHistory(system);
+    if (!history || history.currentIndex >= history.versions.length - 1) {
+        return;
+    }
+    const version = applyHistoryIndex(system, history.currentIndex + 1);
+    persistSignatures();
+    showSignatureMessage(formatHistoryActionMessage('Advanced', version));
+    runSignatureAnalysis();
+}
+
+function handleToggleSignatureOverride(row) {
+    const system = signatureState.currentSystem;
+    if (!system || !row || !row.signatureId) {
+        return;
+    }
+    const nextState = cycleSignatureOverrideState(system, row.signatureId);
+    pruneOverridesForSystem(system);
+    persistSignatures();
+    showSignatureMessage(formatOverrideToggleMessage(row.signatureId, nextState));
     runSignatureAnalysis();
 }
 
@@ -244,8 +761,13 @@ function setBookmarkData(bookmarks) {
 function setSignatureActiveSystem(systemName) {
     showSignatureMessage('');
     signatureState.currentSystem = systemName || null;
-    if (signatureState.currentSystem && signatureState.perSystem.has(signatureState.currentSystem)) {
-        signatureState.signatures = [...signatureState.perSystem.get(signatureState.currentSystem)];
+    if (signatureState.currentSystem) {
+        const history = getSystemHistory(signatureState.currentSystem);
+        if (history && history.versions.length > 0 && history.currentIndex >= 0) {
+            applyHistoryIndex(signatureState.currentSystem, history.currentIndex);
+        } else {
+            signatureState.signatures = [];
+        }
     } else {
         signatureState.signatures = [];
     }
@@ -372,6 +894,12 @@ function computeSignatureMatches(signatures, bookmarks) {
 function createSignatureRow({ status, signature = null, bookmark = null, bookmarkKey = null }) {
     const signatureId = signature?.signatureId || '';
     const bookmarkLabel = bookmark?.Label || '';
+    const autoWormhole = detectWormholeSignature(signature, bookmark);
+    const system = signatureState.currentSystem;
+    const overrideState = signatureId && system
+        ? getSignatureOverrideState(system, signatureId)
+        : SIGNATURE_OVERRIDE.AUTO;
+    const effectiveWormhole = applyOverrideToDetection(autoWormhole, overrideState);
     return {
         status,
         signatureId,
@@ -379,7 +907,11 @@ function createSignatureRow({ status, signature = null, bookmark = null, bookmar
         signature,
         bookmark,
         bookmarkKey: bookmarkKey || null,
-        isWormhole: detectWormholeSignature(signature, bookmark)
+        isWormhole: effectiveWormhole,
+        autoWormhole,
+        overrideState,
+        hasOverride: overrideState !== SIGNATURE_OVERRIDE.AUTO,
+        showActions: effectiveWormhole
     };
 }
 
@@ -428,6 +960,17 @@ function updateSignatureUI() {
     if (signatureDom.clearButton) {
         signatureDom.clearButton.disabled =
             !signatureState.currentSystem || signatureState.signatures.length === 0;
+    }
+
+    const navigationState = signatureState.currentSystem
+        ? getHistoryNavigationState(signatureState.currentSystem)
+        : { hasBack: false, hasForward: false };
+
+    if (signatureDom.historyBackButton) {
+        signatureDom.historyBackButton.disabled = !navigationState.hasBack;
+    }
+    if (signatureDom.historyForwardButton) {
+        signatureDom.historyForwardButton.disabled = !navigationState.hasForward;
     }
 
     if (!signatureState.currentSystem) {
@@ -493,11 +1036,21 @@ function renderSignatureTable(rows) {
         if (row.isWormhole) {
             tr.classList.add('signature-wormhole');
         }
+        if (row.hasOverride) {
+            tr.classList.add('signature-override');
+            if (row.overrideState === SIGNATURE_OVERRIDE.FORCE_ON) {
+                tr.classList.add('signature-override-on');
+            } else if (row.overrideState === SIGNATURE_OVERRIDE.FORCE_OFF) {
+                tr.classList.add('signature-override-off');
+            }
+        }
 
         const signatureCell = document.createElement('td');
+        signatureCell.classList.add('signature-id-cell');
         signatureCell.textContent = row.signatureId ? row.signatureId : '';
 
         const bookmarkCell = document.createElement('td');
+        bookmarkCell.classList.add('bookmark-label-cell');
         bookmarkCell.textContent = row.bookmarkLabel ? row.bookmarkLabel : '';
 
         const statusCell = document.createElement('td');
@@ -505,19 +1058,22 @@ function renderSignatureTable(rows) {
 
         const actionsCell = document.createElement('td');
         actionsCell.classList.add('signature-actions-cell');
-        if (row.isWormhole && row.signatureId) {
+        if (row.signatureId) {
             const actionContainer = document.createElement('div');
             actionContainer.className = 'signature-row-actions';
-            actionContainer.appendChild(createSignatureActionButton(
-                'IN BM',
-                'Generate inbound wormhole bookmark',
-                () => handleGenerateInBookmark(row)
-            ));
-            actionContainer.appendChild(createSignatureActionButton(
-                'OUT BM',
-                'Generate outbound wormhole bookmark',
-                () => handleGenerateOutBookmark(row)
-            ));
+            actionContainer.appendChild(createSignatureOverrideButton(row));
+            if (row.showActions) {
+                actionContainer.appendChild(createSignatureActionButton(
+                    'IN BM',
+                    'Generate inbound wormhole bookmark',
+                    () => handleGenerateInBookmark(row)
+                ));
+                actionContainer.appendChild(createSignatureActionButton(
+                    'OUT BM',
+                    'Generate outbound wormhole bookmark',
+                    () => handleGenerateOutBookmark(row)
+                ));
+            }
             actionsCell.appendChild(actionContainer);
         }
 
@@ -536,6 +1092,18 @@ function createSignatureActionButton(label, title, handler) {
     button.title = title;
     button.classList.add('signature-action-button');
     button.addEventListener('click', handler);
+    return button;
+}
+
+function createSignatureOverrideButton(row) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    const state = row.overrideState || SIGNATURE_OVERRIDE.AUTO;
+    button.textContent = resolveOverrideLabel(state);
+    button.title = resolveOverrideTooltip(state);
+    button.classList.add('signature-action-button', 'signature-override-button');
+    button.dataset.state = state;
+    button.addEventListener('click', () => handleToggleSignatureOverride(row));
     return button;
 }
 
