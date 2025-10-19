@@ -1,6 +1,7 @@
 import { extractSystems } from './extractSystems.js';
 import { buildSystemTag } from './buildSystemTag.js';
 import { lockNodes, unlockNodes, dragStarted, dragged, dragEnded } from './dragHandlers.js';
+import { getRowExpiry, clearCountdowns, TIMER_TAGS } from '../../bookmarkTimers.js';
 
 const PLACEHOLDER_PATTERN = /^\?+$/;
 const PLACEHOLDER_KEY_COLUMNS = ['Label', 'Type', 'SOL', 'CON', 'REG', 'Date', 'Expiry', 'Creator', 'Jumps'];
@@ -61,6 +62,13 @@ function buildConnectionKey(systemA, systemB) {
   return left <= right ? `${left}|${right}` : `${right}|${left}`;
 }
 
+function normalizeSystemKey(value) {
+  if (!value && value !== 0) {
+    return '';
+  }
+  return value.toString().trim().toUpperCase();
+}
+
 const WORMHOLE_CLASS_PREFIXES = [
   'HS',
   'LS',
@@ -113,6 +121,8 @@ export function displayMap(data, options = {}) {
     console.warn('displayMap: mapContainer not found');
     return;
   }
+
+  clearCountdowns(TIMER_TAGS.MAP);
 
   const previousSelection = options?.preserveSelection
     ? (window.__bookmarkViewerSelectedSystem || null)
@@ -337,6 +347,7 @@ export function displayMap(data, options = {}) {
   const statuses = {};
   const placeholderCache = new Map();
   const connectionCandidates = new Map();
+  const systemExpiryIndex = new Map();
 
   const getStatusColor = (nodeOrName) => {
     let statusKey = null;
@@ -384,7 +395,8 @@ export function displayMap(data, options = {}) {
     const systemName = (row && row['SOL'] !== undefined && row['SOL'] !== null)
       ? row['SOL'].toString().trim()
       : '';
-    if (systemName) {
+    const normalizedSystemKey = normalizeSystemKey(systemName);
+    if (normalizedSystemKey) {
       systemsWithBookmarks.add(systemName);
       if (!systems[systemName]) {
         systems[systemName] = {
@@ -393,6 +405,28 @@ export function displayMap(data, options = {}) {
           filterKey: systemName,
           originSystem: systemName
         };
+      }
+
+      const expiryInfo = getRowExpiry(row);
+      if (expiryInfo) {
+        const existing = systemExpiryIndex.get(normalizedSystemKey) || {
+          hasInfinite: false,
+          earliest: null,
+          raw: null
+        };
+        if (expiryInfo.type === 'infinite') {
+          existing.hasInfinite = true;
+          existing.earliest = null;
+          existing.raw = expiryInfo.rawValue ?? row['Expiry'] ?? '∞';
+        } else if (expiryInfo.type === 'timestamp' && !existing.hasInfinite) {
+          if (existing.earliest === null || expiryInfo.timestamp < existing.earliest) {
+            existing.earliest = expiryInfo.timestamp;
+            existing.raw = expiryInfo.rawValue ?? row['Expiry'] ?? '';
+          }
+        } else if (!existing.raw && expiryInfo.rawValue) {
+          existing.raw = expiryInfo.rawValue;
+        }
+        systemExpiryIndex.set(normalizedSystemKey, existing);
       }
     }
 
@@ -569,6 +603,39 @@ export function displayMap(data, options = {}) {
         statuses[system] = status;
       }
     }
+  });
+
+  Object.values(systems).forEach((systemNode) => {
+    const lookupKeys = systemNode.isPlaceholder
+      ? [systemNode.name].filter(Boolean)
+      : [systemNode.name, systemNode.filterKey, systemNode.originSystem].filter(Boolean);
+    let resolved = null;
+    for (let index = 0; index < lookupKeys.length; index += 1) {
+      const candidateKey = normalizeSystemKey(lookupKeys[index]);
+      if (!candidateKey) {
+        continue;
+      }
+      const candidate = systemExpiryIndex.get(candidateKey);
+      if (!candidate) {
+        continue;
+      }
+      if (candidate.hasInfinite) {
+        resolved = { type: 'infinite', timestamp: null, rawValue: candidate.raw };
+        break;
+      }
+      if (candidate.earliest !== null) {
+        if (!resolved || resolved.timestamp === null || candidate.earliest < resolved.timestamp) {
+          resolved = {
+            type: 'timestamp',
+            timestamp: candidate.earliest,
+            rawValue: candidate.raw
+          };
+        }
+      } else if (!resolved) {
+        resolved = { type: 'unknown', timestamp: null, rawValue: candidate.raw };
+      }
+    }
+    systemNode.expiryInfo = resolved || { type: 'unknown', timestamp: null, rawValue: null };
   });
 
   connections = [];

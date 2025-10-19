@@ -1,4 +1,7 @@
+import { getRowExpiry, attachCountdown, clearCountdowns, TIMER_TAGS } from './bookmarkTimers.js';
+
 const EXCLUDED_COLUMNS = ["Jumps", "CON", "REG", "Date"];
+const REMAINING_COLUMN = 'Remaining';
 
 let cachedKeys = [];
 let cachedData = [];
@@ -6,7 +9,15 @@ let cachedFilter = null;
 let highlightStatus = new Map();
 
 function displayTable(keys, data, filterSystem = null) {
-    cachedKeys = Array.isArray(keys) ? keys : [];
+    cachedKeys = Array.isArray(keys) ? [...keys] : [];
+    if (!cachedKeys.includes(REMAINING_COLUMN)) {
+        const expiryIndex = cachedKeys.indexOf('Expiry');
+        if (expiryIndex >= 0) {
+            cachedKeys.splice(expiryIndex + 1, 0, REMAINING_COLUMN);
+        } else {
+            cachedKeys.push(REMAINING_COLUMN);
+        }
+    }
     cachedData = Array.isArray(data) ? data : [];
     cachedFilter = filterSystem;
     renderTable();
@@ -21,6 +32,8 @@ function renderTable() {
     if (!tableContainer) {
         return;
     }
+
+    clearCountdowns(TIMER_TAGS.TABLE);
 
     const filteredData = cachedFilter
         ? cachedData.filter((row) => row['SOL'] === cachedFilter)
@@ -69,7 +82,18 @@ function buildBody(rows) {
         cachedKeys.forEach((key) => {
             if (!EXCLUDED_COLUMNS.includes(key)) {
                 const td = document.createElement('td');
-                td.textContent = row[key] || '';
+                if (key === REMAINING_COLUMN) {
+                    td.classList.add('bookmark-remaining');
+                    const expiryInfo = getRowExpiry(row);
+                    attachCountdown(td, expiryInfo, {
+                        tag: TIMER_TAGS.TABLE,
+                        style: 'default'
+                    });
+                } else if (key === 'Expiry') {
+                    td.textContent = row[key] ? row[key] : '—';
+                } else {
+                    td.textContent = row[key] || '';
+                }
                 tr.appendChild(td);
             }
         });
@@ -138,4 +162,3 @@ window.updateBookmarkSignatureMatches = updateBookmarkSignatureMatches;
 window.createBookmarkKey = createBookmarkKey;
 window.renderActiveTable = renderTable;
 window.getCurrentTableFilter = () => cachedFilter;
-

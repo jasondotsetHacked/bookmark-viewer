@@ -50,6 +50,9 @@ async function readClipboardAndDisplayTable() {
 
         displayTable(keys, parsedData, selectionToRestore);
         displayMap(parsedData, { preserveSelection: Boolean(selectionToRestore) });
+        if (typeof window.updateBookmarkStats === 'function') {
+            window.updateBookmarkStats(parsedData);
+        }
 
         updateTimestampDisplay(timestamp);
         displayErrorMessage(''); // Clear any previous error message

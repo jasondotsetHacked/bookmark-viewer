@@ -2,25 +2,267 @@ const GRID_SIZE = 36;
 const MIN_GRID_W = 8;
 const MIN_GRID_H = 6;
 const STORAGE_PREFIX = 'moduleLayout:v3:';
+const VISIBILITY_STORAGE_KEY = `${STORAGE_PREFIX}visibility`;
 
 const DEFAULT_LAYOUTS = {
     map: { x: 0, y: 0, w: 26, h: 18 },
     bookmarks: { x: 0, y: 18, w: 24, h: 14 },
-    signatures: { x: 26, y: 0, w: 8, h: 26 },
-    intel: { x: 26, y: 26, w: 8, h: 8 }
+    signatures: { x: 26, y: 0, w: 8, h: 20 },
+    intel: { x: 26, y: 20, w: 8, h: 6 },
+    stats: { x: 26, y: 26, w: 8, h: 8 }
 };
 
 const layoutState = new Map();
+const moduleVisibilityControls = new Map();
 let containerBaseWidth = 0;
 let containerBaseHeight = 0;
 let activeInteraction = null;
 const LOCK_STATE_KEY = `${STORAGE_PREFIX}lockState`;
 let isLayoutLocked = false;
 let lockToggleButton = null;
+let moduleVisibilityState = new Map();
+let modulePreferencesButton = null;
+let modulePreferencesPanel = null;
+let modulePreferencesInitialized = false;
+let isModulePreferencesOpen = false;
 
 const MAX_LAYOUT_ATTEMPTS = 8;
 const MIN_MEASURE_WIDTH = GRID_SIZE * MIN_GRID_W;
 const MIN_MEASURE_HEIGHT = GRID_SIZE * MIN_GRID_H;
+
+function loadModuleVisibilityState() {
+    try {
+        const raw = localStorage.getItem(VISIBILITY_STORAGE_KEY);
+        if (!raw) {
+            return new Map();
+        }
+        const parsed = JSON.parse(raw);
+        const map = new Map();
+        Object.entries(parsed).forEach(([moduleId, value]) => {
+            map.set(moduleId, value !== false);
+        });
+        return map;
+    } catch (error) {
+        console.warn('Failed to load module visibility state', error);
+        return new Map();
+    }
+}
+
+function persistModuleVisibilityState() {
+    try {
+        const payload = {};
+        moduleVisibilityState.forEach((visible, moduleId) => {
+            payload[moduleId] = visible !== false;
+        });
+        localStorage.setItem(VISIBILITY_STORAGE_KEY, JSON.stringify(payload));
+    } catch (error) {
+        console.warn('Failed to persist module visibility state', error);
+    }
+}
+
+function isModuleCurrentlyVisible(moduleEl) {
+    if (!moduleEl) {
+        return false;
+    }
+    return moduleEl.dataset.visible !== 'false';
+}
+
+function applyModuleVisibility(moduleId, visible, options = {}) {
+    if (!moduleId) {
+        return;
+    }
+    const settings = {
+        persist: true,
+        updateControls: true,
+        notify: true,
+        skipLayoutUpdate: false,
+        ...options
+    };
+
+    const resolvedVisible = visible !== false;
+    moduleVisibilityState.set(moduleId, resolvedVisible);
+
+    const moduleEl = document.querySelector(`.module[data-module-id="${moduleId}"]`);
+    if (moduleEl) {
+        moduleEl.dataset.visible = resolvedVisible ? 'true' : 'false';
+        moduleEl.setAttribute('aria-hidden', resolvedVisible ? 'false' : 'true');
+        moduleEl.classList.toggle('module-hidden', !resolvedVisible);
+    }
+
+    if (settings.updateControls) {
+        const control = moduleVisibilityControls.get(moduleId);
+        if (control) {
+            control.checked = resolvedVisible;
+        }
+    }
+
+    if (settings.persist) {
+        persistModuleVisibilityState();
+    }
+
+    if (!settings.skipLayoutUpdate) {
+        const container = document.getElementById('moduleGrid');
+        if (container) {
+            requestAnimationFrame(() => enforceBounds(container));
+        }
+    }
+
+    if (settings.notify) {
+        window.dispatchEvent(new CustomEvent('moduleVisibilityChanged', {
+            detail: {
+                moduleId,
+                visible: resolvedVisible
+            }
+        }));
+    }
+}
+
+function buildModulePreferencesPanel() {
+    if (!modulePreferencesPanel) {
+        return;
+    }
+
+    moduleVisibilityControls.clear();
+    modulePreferencesPanel.innerHTML = '';
+
+    const modules = Array.from(document.querySelectorAll('.module[data-module-id]'));
+
+    if (!modules.length) {
+        const emptyMessage = document.createElement('div');
+        emptyMessage.className = 'module-preferences-empty';
+        emptyMessage.textContent = 'No modules available.';
+        modulePreferencesPanel.appendChild(emptyMessage);
+        return;
+    }
+
+    const heading = document.createElement('h3');
+    heading.textContent = 'Modules';
+    modulePreferencesPanel.appendChild(heading);
+
+    modules
+        .sort((a, b) => {
+            const labelA = (a.querySelector('.module-header h2')?.textContent || a.dataset.moduleId || '').trim();
+            const labelB = (b.querySelector('.module-header h2')?.textContent || b.dataset.moduleId || '').trim();
+            return labelA.localeCompare(labelB, undefined, { sensitivity: 'base' });
+        })
+        .forEach((moduleEl) => {
+            const moduleId = moduleEl.dataset.moduleId || moduleEl.getAttribute('data-module-id');
+            if (!moduleId) {
+                return;
+            }
+            if (!moduleVisibilityState.has(moduleId)) {
+                moduleVisibilityState.set(moduleId, true);
+            }
+            const checkboxId = `module-toggle-${moduleId}`;
+            const container = document.createElement('label');
+            container.className = 'module-preferences-item';
+            container.setAttribute('for', checkboxId);
+
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.id = checkboxId;
+            input.checked = isModuleCurrentlyVisible(moduleEl);
+            input.dataset.moduleId = moduleId;
+            input.addEventListener('change', () => applyModuleVisibility(moduleId, input.checked));
+
+            const label = document.createElement('span');
+            const labelText = moduleEl.querySelector('.module-header h2')?.textContent || moduleId;
+            label.textContent = labelText.trim();
+
+            container.appendChild(input);
+            container.appendChild(label);
+            modulePreferencesPanel.appendChild(container);
+            moduleVisibilityControls.set(moduleId, input);
+        });
+}
+
+function toggleModulePreferencesPanel(forceState = null) {
+    if (!modulePreferencesButton || !modulePreferencesPanel) {
+        return;
+    }
+    const nextState = forceState === null ? !isModulePreferencesOpen : Boolean(forceState);
+    if (nextState) {
+        buildModulePreferencesPanel();
+    }
+
+    isModulePreferencesOpen = nextState;
+    modulePreferencesPanel.classList.toggle('open', nextState);
+    modulePreferencesPanel.setAttribute('aria-hidden', nextState ? 'false' : 'true');
+    modulePreferencesButton.setAttribute('aria-expanded', nextState ? 'true' : 'false');
+}
+
+function handlePreferencesDocumentClick(event) {
+    if (!isModulePreferencesOpen) {
+        return;
+    }
+    if (modulePreferencesPanel?.contains(event.target) || modulePreferencesButton?.contains(event.target)) {
+        return;
+    }
+    toggleModulePreferencesPanel(false);
+}
+
+function handlePreferencesKeydown(event) {
+    if (!isModulePreferencesOpen || event.key !== 'Escape') {
+        return;
+    }
+    toggleModulePreferencesPanel(false);
+    requestAnimationFrame(() => modulePreferencesButton?.focus());
+}
+
+function initModulePreferences() {
+    moduleVisibilityState = loadModuleVisibilityState();
+
+    const modules = Array.from(document.querySelectorAll('.module[data-module-id]'));
+    let didUpdateState = false;
+    modules.forEach((moduleEl) => {
+        const moduleId = moduleEl.dataset.moduleId || moduleEl.getAttribute('data-module-id');
+        if (!moduleId) {
+            return;
+        }
+        if (!moduleVisibilityState.has(moduleId)) {
+            moduleVisibilityState.set(moduleId, true);
+            didUpdateState = true;
+        }
+        const storedVisible = moduleVisibilityState.get(moduleId) !== false;
+        applyModuleVisibility(moduleId, storedVisible, {
+            persist: false,
+            updateControls: false,
+            notify: false,
+            skipLayoutUpdate: true
+        });
+    });
+
+    modulePreferencesButton = document.getElementById('modulePreferencesButton') || modulePreferencesButton;
+    modulePreferencesPanel = document.getElementById('modulePreferencesPanel') || modulePreferencesPanel;
+
+    if (modulePreferencesButton && modulePreferencesPanel && !modulePreferencesInitialized) {
+        modulePreferencesButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            toggleModulePreferencesPanel();
+        });
+        modulePreferencesButton.addEventListener('keydown', (event) => {
+            if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                toggleModulePreferencesPanel(true);
+            }
+        });
+        modulePreferencesPanel.addEventListener('click', (event) => event.stopPropagation());
+        document.addEventListener('click', handlePreferencesDocumentClick);
+        document.addEventListener('keydown', handlePreferencesKeydown);
+    }
+
+    if (modulePreferencesPanel) {
+        buildModulePreferencesPanel();
+    } else {
+        moduleVisibilityControls.clear();
+    }
+
+    modulePreferencesInitialized = true;
+    if (didUpdateState) {
+        persistModuleVisibilityState();
+    }
+}
 
 function initModuleGrid() {
     const container = document.getElementById('moduleGrid');
@@ -234,7 +476,11 @@ function updateContainerExtents(container) {
     let maxBottom = containerBaseHeight;
     let maxRight = containerBaseWidth;
 
-    layoutState.forEach((layout) => {
+    layoutState.forEach((layout, moduleId) => {
+        const moduleEl = container.querySelector(`.module[data-module-id="${moduleId}"]`);
+        if (moduleEl && !isModuleCurrentlyVisible(moduleEl)) {
+            return;
+        }
         const bottom = (layout.y + layout.h) * GRID_SIZE;
         const right = (layout.x + layout.w) * GRID_SIZE;
         if (bottom > maxBottom) maxBottom = bottom;
@@ -252,6 +498,10 @@ function updateContainerExtents(container) {
 function detectCollision(moduleId, layout) {
     for (const [otherId, otherLayout] of layoutState.entries()) {
         if (otherId === moduleId) continue;
+        const otherModuleEl = document.querySelector(`.module[data-module-id="${otherId}"]`);
+        if (otherModuleEl && !isModuleCurrentlyVisible(otherModuleEl)) {
+            continue;
+        }
         const overlaps =
             layout.x < otherLayout.x + otherLayout.w &&
             layout.x + layout.w > otherLayout.x &&
@@ -528,9 +778,14 @@ function cancelActiveInteraction() {
     }
 }
 
-document.addEventListener('DOMContentLoaded', initModuleGrid);
+function bootstrapModuleLayout() {
+    initModulePreferences();
+    initModuleGrid();
+}
 
-export { initModuleGrid };
+document.addEventListener('DOMContentLoaded', bootstrapModuleLayout);
+
+export { initModuleGrid, applyModuleVisibility };
 
 function calculateResponsiveDefaults(gridWidth, gridHeight) {
     const effectiveWidth = Math.max(gridWidth, MIN_GRID_W);
@@ -565,17 +820,23 @@ function buildLargeLayout(widthUnits, heightUnits) {
     );
     const bookmarksHeight = Math.max(MIN_GRID_H, heightUnits - mapHeight);
     const signaturesHeight = clamp(
-        Math.round(heightUnits * 0.58),
+        Math.round(heightUnits * 0.4),
         MIN_GRID_H,
         Math.max(MIN_GRID_H, heightUnits - MIN_GRID_H)
     );
-    const intelHeight = Math.max(MIN_GRID_H, heightUnits - signaturesHeight);
+    const intelHeight = clamp(
+        Math.round(heightUnits * 0.15),
+        MIN_GRID_H,
+        Math.max(MIN_GRID_H, heightUnits - signaturesHeight - MIN_GRID_H)
+    );
+    const statsHeight = Math.max(MIN_GRID_H, heightUnits - signaturesHeight - intelHeight);
 
     return {
         map: { x: 0, y: 0, w: mainWidth, h: mapHeight },
         bookmarks: { x: 0, y: mapHeight, w: mainWidth, h: bookmarksHeight },
         signatures: { x: mainWidth, y: 0, w: sideWidth, h: signaturesHeight },
-        intel: { x: mainWidth, y: signaturesHeight, w: sideWidth, h: intelHeight }
+        intel: { x: mainWidth, y: signaturesHeight, w: sideWidth, h: intelHeight },
+        stats: { x: mainWidth, y: signaturesHeight + intelHeight, w: sideWidth, h: statsHeight }
     };
 }
 
@@ -601,11 +862,24 @@ function buildMediumLayout(widthUnits, heightUnits) {
         leftWidth = Math.max(MIN_GRID_W, widthUnits - rightWidth);
     }
 
+    const signaturesHeight = clamp(
+        Math.round(bottomHeight * 0.6),
+        MIN_GRID_H,
+        bottomHeight
+    );
+    const intelHeight = clamp(
+        Math.round(bottomHeight * 0.25),
+        MIN_GRID_H,
+        bottomHeight - signaturesHeight
+    );
+    const statsHeight = Math.max(MIN_GRID_H, bottomHeight - signaturesHeight - intelHeight);
+
     return {
         map: { x: 0, y: 0, w: widthUnits, h: mapHeight },
         bookmarks: { x: 0, y: mapHeight, w: widthUnits, h: bookmarksHeight },
         signatures: { x: 0, y: lowerY, w: leftWidth, h: bottomHeight },
-        intel: { x: leftWidth, y: lowerY, w: rightWidth, h: bottomHeight }
+        intel: { x: leftWidth, y: lowerY, w: rightWidth, h: intelHeight },
+        stats: { x: leftWidth, y: lowerY + intelHeight, w: rightWidth, h: statsHeight }
     };
 }
 
@@ -624,16 +898,23 @@ function buildSmallLayout(widthUnits, heightUnits) {
     const lowerStart = mapHeight + bookmarksHeight;
     const remainingHeight = Math.max(MIN_GRID_H * 2, heightUnits - lowerStart);
     const signaturesHeight = clamp(
-        Math.round(remainingHeight * 0.55),
+        Math.round(remainingHeight * 0.4),
         MIN_GRID_H,
         Math.max(MIN_GRID_H, remainingHeight - MIN_GRID_H)
     );
-    const intelHeight = Math.max(MIN_GRID_H, remainingHeight - signaturesHeight);
+    const intelHeight = clamp(
+        Math.round(remainingHeight * 0.25),
+        MIN_GRID_H,
+        Math.max(MIN_GRID_H, remainingHeight - signaturesHeight - MIN_GRID_H)
+    );
+    const statsStart = lowerStart + signaturesHeight + intelHeight;
+    const statsHeight = Math.max(MIN_GRID_H, heightUnits - statsStart);
 
     return {
         map: { x: 0, y: 0, w: widthUnits, h: mapHeight },
         bookmarks: { x: 0, y: mapHeight, w: widthUnits, h: bookmarksHeight },
         signatures: { x: 0, y: lowerStart, w: widthUnits, h: signaturesHeight },
-        intel: { x: 0, y: lowerStart + signaturesHeight, w: widthUnits, h: intelHeight }
+        intel: { x: 0, y: lowerStart + signaturesHeight, w: widthUnits, h: intelHeight },
+        stats: { x: 0, y: statsStart, w: widthUnits, h: statsHeight }
     };
 }

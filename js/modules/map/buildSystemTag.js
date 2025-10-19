@@ -1,4 +1,5 @@
 import { loadSystemsData } from '../../loadSystemsData.js';
+import { attachCountdown, TIMER_TAGS } from '../../bookmarkTimers.js';
 
 const classColors = {
     "HS": "#2FEFEF",
@@ -104,6 +105,63 @@ export async function buildSystemTag(selection) {
                 .attr("width", bbox.width + 8)
                 .attr("height", bbox.height + 4);
         });
+
+        g.selectAll('.label-timer').remove();
+        g.selectAll('.label-rect-timer').remove();
+
+        const expiryInfo = d.expiryInfo || null;
+        if (expiryInfo && expiryInfo.type && expiryInfo.type !== 'unknown') {
+            const isInfinite = expiryInfo.type === 'infinite';
+            const timerColor = isInfinite ? '#ffffff' : (classColor || '#00ff00');
+            const timerText = g.append('text')
+                .attr('class', 'label label-timer')
+                .attr('fill', timerColor)
+                .attr('font-size', isInfinite ? '30px' : '10px')
+                .attr('font-weight', isInfinite ? '700' : null)
+                .attr('text-anchor', 'middle')
+                .attr('dy', isInfinite ? '1.2em' : '2.2em');
+
+            let timerRect = null;
+            if (!isInfinite) {
+                timerRect = g.insert('rect', 'text.label-timer')
+                    .attr('class', 'label-rect label-rect-timer')
+                    .attr('fill', 'rgba(0, 0, 0, 0.82)')
+                    .attr('stroke', timerColor)
+                    .attr('stroke-width', 1);
+            }
+
+            const syncTimerRect = () => {
+                if (!timerRect) {
+                    return;
+                }
+                const node = timerText.node();
+                if (!node) {
+                    return;
+                }
+                const bbox = node.getBBox();
+                timerRect
+                    .attr('x', bbox.x - 4)
+                    .attr('y', bbox.y - 2)
+                    .attr('width', Math.max(0, bbox.width + 8))
+                    .attr('height', Math.max(0, bbox.height + 4));
+            };
+
+            const timerElement = timerText.node();
+            if (timerElement) {
+                if (!attachCountdown(timerElement, expiryInfo, {
+                    tag: TIMER_TAGS.MAP,
+                    style: 'compact',
+                    showTitle: false,
+                    onUpdate: syncTimerRect
+                })) {
+                    if (isInfinite) {
+                        timerText.text('∞');
+                    } else {
+                        syncTimerRect();
+                    }
+                }
+            }
+        }
 
         function selectSystem() {
             const systemName = d.filterKey || d.name;

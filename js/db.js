@@ -41,6 +41,9 @@ async function clearDatabase() {
     if (typeof window.setSystemIntelActiveSystem === 'function') {
         window.setSystemIntelActiveSystem(null);
     }
+    if (typeof window.updateBookmarkStats === 'function') {
+        window.updateBookmarkStats([]);
+    }
 }
 
 async function saveDataToDB(parsedData) {

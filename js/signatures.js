@@ -35,10 +35,15 @@ const signatureDom = {
     clearButton: null,
     tableContainer: null,
     statusLabel: null,
-    message: null
+    message: null,
+    tutorialButton: null,
+    tutorialModal: null,
+    tutorialClose: null,
+    tutorialConfirm: null
 };
 
 let signatureMessageTimeout = null;
+let tutorialPreviousFocus = null;
 
 document.addEventListener('DOMContentLoaded', initSignatureModule);
 
@@ -48,6 +53,10 @@ function initSignatureModule() {
     signatureDom.tableContainer = document.getElementById('signatureTableContainer');
     signatureDom.statusLabel = document.getElementById('signatureActiveSystem');
     signatureDom.message = document.getElementById('signatureMessage');
+    signatureDom.tutorialButton = document.getElementById('wormholeTutorialButton');
+    signatureDom.tutorialModal = document.getElementById('wormholeTutorialModal');
+    signatureDom.tutorialClose = document.getElementById('wormholeTutorialCloseButton');
+    signatureDom.tutorialConfirm = document.getElementById('wormholeTutorialConfirmButton');
 
     if (!signatureDom.readButton || !signatureDom.clearButton || !signatureDom.tableContainer) {
         console.warn('Signature module elements missing from DOM');
@@ -59,6 +68,7 @@ function initSignatureModule() {
     signatureDom.readButton.addEventListener('click', handleReadSignatures);
     signatureDom.clearButton.addEventListener('click', handleClearSignatures);
 
+    wireTutorialModal();
     updateSignatureUI();
 }
 
@@ -1129,6 +1139,112 @@ function showSignatureMessage(message, isError = false, timeoutMs = 6000) {
             signatureDom.message.textContent = '';
             signatureDom.message.classList.remove('error');
         }, timeoutMs);
+    }
+}
+
+function wireTutorialModal() {
+    if (!signatureDom.tutorialButton || !signatureDom.tutorialModal) {
+        return;
+    }
+
+    signatureDom.tutorialModal.style.display = 'none';
+    signatureDom.tutorialModal.setAttribute('aria-hidden', 'true');
+
+    signatureDom.tutorialButton.addEventListener('click', openTutorialModal);
+    signatureDom.tutorialModal.addEventListener('click', (event) => {
+        if (event.target === signatureDom.tutorialModal) {
+            closeTutorialModal();
+        }
+    });
+
+    if (signatureDom.tutorialClose) {
+        signatureDom.tutorialClose.addEventListener('click', closeTutorialModal);
+    }
+    if (signatureDom.tutorialConfirm) {
+        signatureDom.tutorialConfirm.addEventListener('click', closeTutorialModal);
+    }
+}
+
+function openTutorialModal() {
+    if (!signatureDom.tutorialModal) {
+        return;
+    }
+    tutorialPreviousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    signatureDom.tutorialModal.style.display = 'block';
+    signatureDom.tutorialModal.setAttribute('aria-hidden', 'false');
+    document.addEventListener('keydown', handleTutorialKeydown, true);
+    setTimeout(() => {
+        const focusTarget = signatureDom.tutorialClose || signatureDom.tutorialConfirm;
+        if (focusTarget && typeof focusTarget.focus === 'function') {
+            focusTarget.focus();
+        }
+    }, 0);
+}
+
+function closeTutorialModal() {
+    if (!signatureDom.tutorialModal) {
+        return;
+    }
+    signatureDom.tutorialModal.style.display = 'none';
+    signatureDom.tutorialModal.setAttribute('aria-hidden', 'true');
+    document.removeEventListener('keydown', handleTutorialKeydown, true);
+    if (tutorialPreviousFocus && typeof tutorialPreviousFocus.focus === 'function') {
+        tutorialPreviousFocus.focus();
+    }
+    tutorialPreviousFocus = null;
+}
+
+function handleTutorialKeydown(event) {
+    if (!signatureDom.tutorialModal || signatureDom.tutorialModal.getAttribute('aria-hidden') === 'true') {
+        return;
+    }
+    if (event.key === 'Escape') {
+        event.preventDefault();
+        closeTutorialModal();
+        return;
+    }
+    if (event.key !== 'Tab') {
+        return;
+    }
+
+    const focusableSelectors = [
+        'button',
+        '[href]',
+        'input',
+        'select',
+        'textarea',
+        '[tabindex]:not([tabindex="-1"])'
+    ];
+    const focusableElements = Array.from(
+        signatureDom.tutorialModal.querySelectorAll(focusableSelectors.join(','))
+    ).filter((element) => {
+        if (!(element instanceof HTMLElement)) {
+            return false;
+        }
+        if (element.hasAttribute('disabled') || element.getAttribute('aria-hidden') === 'true') {
+            return false;
+        }
+        if (Number(element.tabIndex) === -1) {
+            return false;
+        }
+        const rects = element.getClientRects();
+        return rects.length > 0 && rects[0].width > 0 && rects[0].height > 0;
+    });
+
+    if (focusableElements.length === 0) {
+        event.preventDefault();
+        return;
+    }
+
+    const firstFocusable = focusableElements[0];
+    const lastFocusable = focusableElements[focusableElements.length - 1];
+
+    if (!event.shiftKey && document.activeElement === lastFocusable) {
+        event.preventDefault();
+        firstFocusable.focus();
+    } else if (event.shiftKey && document.activeElement === firstFocusable) {
+        event.preventDefault();
+        lastFocusable.focus();
     }
 }
 

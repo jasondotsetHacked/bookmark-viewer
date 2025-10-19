@@ -52,6 +52,9 @@ async function loadDataAndDisplay() {
     const data = await getDataFromDB();
     displayTable(['Label', 'Type', 'Jumps', 'SOL', 'CON', 'REG', 'Date', 'Expiry', 'Creator'], data);
     displayMap(data);
+    if (typeof window.updateBookmarkStats === 'function') {
+        window.updateBookmarkStats(data);
+    }
 }
 
 window.filterBookmarksBySystem = filterBookmarksBySystem;

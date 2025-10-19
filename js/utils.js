@@ -24,6 +24,9 @@ async function loadDataAndDisplay(versionTimestamp = null) {
         const keys = ["Label", "Type", "Jumps", "SOL", "CON", "REG", "Date", "Expiry", "Creator"];
         displayTable(keys, data);
         displayMap(data);
+        if (typeof window.updateBookmarkStats === 'function') {
+            window.updateBookmarkStats(data);
+        }
         if (versionTimestamp) {
             updateTimestampDisplay(versionTimestamp);
         } else {
