@@ -115,6 +115,9 @@ function extractWormholeClass(rawLabel) {
  * @param {boolean} options.preserveSelection Whether to preserve the current system selection.
  */
 export function displayMap(data, options = {}) {
+  // Configuration constants for map layout
+  const CHAIN_SPACING = 100; // Controls spacing between chains (overall system tightness)
+  const SPIRAL_RADIUS = 50; // Controls tightness within individual chains
   console.log('displayMap called with data:', data);
   const mapContainer = document.getElementById('mapContainer');
   if (!mapContainer) {
@@ -752,14 +755,13 @@ export function displayMap(data, options = {}) {
     });
 
     // Position chains further apart
-    const chainSpacing = 200;
     chains.forEach((chain, index) => {
       const angle = (index / chains.length) * 2 * Math.PI;
-      const centerX = width / 2 + Math.cos(angle) * chainSpacing * index;
-      const centerY = height / 2 + Math.sin(angle) * chainSpacing * index;
+      const centerX = width / 2 + Math.cos(angle) * CHAIN_SPACING * index;
+      const centerY = height / 2 + Math.sin(angle) * CHAIN_SPACING * index;
       chain.forEach((node, nodeIndex) => {
-        node.x = centerX + Math.cos(angle + nodeIndex) * 50;
-        node.y = centerY + Math.sin(angle + nodeIndex) * 50;
+        node.x = centerX + Math.cos(angle + nodeIndex) * SPIRAL_RADIUS;
+        node.y = centerY + Math.sin(angle + nodeIndex) * SPIRAL_RADIUS;
       });
     });
   }
@@ -1508,7 +1510,7 @@ export function displayMap(data, options = {}) {
 
   const simulation = d3.forceSimulation(nodes)
     .force('link', d3.forceLink(links).id((d) => d.name).distance(100))
-    .force('charge', d3.forceManyBody().strength(-50))
+    .force('charge', d3.forceManyBody().strength(-10))
     .force('center', d3.forceCenter(width / 2, height / 2))
     .force('collide', d3.forceCollide(50))
     .on('tick', ticked);
