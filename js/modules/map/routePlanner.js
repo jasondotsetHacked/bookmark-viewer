@@ -12,8 +12,22 @@ const state = {
   systemsById: new Map(),
   mapNodes: new Map(),
   mapNodesByLower: new Map(),
-  graph: new Map()
+  graph: new Map(),
+  edgeMetadata: new Map()
 };
+
+const SIGNATURE_TOKEN_REGEX = /^[A-Z0-9]{3}$/;
+
+function normalizeSignatureToken(value) {
+  if (!value && value !== 0) {
+    return null;
+  }
+  const normalized = value.toString().trim().toUpperCase();
+  if (!SIGNATURE_TOKEN_REGEX.test(normalized)) {
+    return null;
+  }
+  return normalized;
+}
 
 function normalizeName(value) {
   if (value === undefined || value === null) {
@@ -78,6 +92,7 @@ export function updateRouteGraph({ nodes = [], links = [], systemRecords = {} } 
   const mapNodes = new Map();
   const mapNodesByLower = new Map();
   const graph = new Map();
+  const edgeMetadata = new Map();
 
   nodes.forEach((node) => {
     if (!node || !node.name) {
@@ -137,11 +152,44 @@ export function updateRouteGraph({ nodes = [], links = [], systemRecords = {} } 
 
     graph.get(sourceName).add(targetName);
     graph.get(targetName).add(sourceName);
+
+    const directionList = Array.isArray(link.directions) ? link.directions : [];
+    directionList.forEach((direction) => {
+      if (!direction) {
+        return;
+      }
+      const dirSource = typeof direction.source === 'string' ? direction.source : direction.source?.name;
+      const dirTarget = typeof direction.target === 'string' ? direction.target : direction.target?.name;
+      if (!dirSource || !dirTarget) {
+        return;
+      }
+      const key = `${dirSource}|${dirTarget}`;
+      const existing = edgeMetadata.get(key) || {
+        source: dirSource,
+        target: dirTarget,
+        sourceSignature: null,
+        targetSignature: null,
+        rawLabel: null
+      };
+      const candidateSource = normalizeSignatureToken(direction.sourceSignature);
+      const candidateTarget = normalizeSignatureToken(direction.targetSignature);
+      if (!existing.sourceSignature && candidateSource) {
+        existing.sourceSignature = candidateSource;
+      }
+      if (!existing.targetSignature && candidateTarget) {
+        existing.targetSignature = candidateTarget;
+      }
+      if (!existing.rawLabel && typeof direction.rawLabel === 'string' && direction.rawLabel.trim()) {
+        existing.rawLabel = direction.rawLabel;
+      }
+      edgeMetadata.set(key, existing);
+    });
   });
 
   state.mapNodes = mapNodes;
   state.mapNodesByLower = mapNodesByLower;
   state.graph = graph;
+  state.edgeMetadata = edgeMetadata;
 }
 
 function resolveOriginName(rawName) {
@@ -238,6 +286,48 @@ function findShortestPath(origin, destination) {
   }
 
   return null;
+}
+
+function getDirectionMetadata(source, target) {
+  if (!source || !target) {
+    return null;
+  }
+  const forwardKey = `${source}|${target}`;
+  return state.edgeMetadata.get(forwardKey) || null;
+}
+
+function buildWormholeSegments(path) {
+  if (!Array.isArray(path) || path.length < 2) {
+    return [];
+  }
+  const segments = [];
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const from = path[index];
+    const to = path[index + 1];
+    const forward = getDirectionMetadata(from, to);
+    const reverse = getDirectionMetadata(to, from);
+    const sourceSignature = normalizeSignatureToken(
+      forward?.sourceSignature ||
+      reverse?.targetSignature ||
+      forward?.targetSignature ||
+      null
+    );
+    const targetSignature = normalizeSignatureToken(
+      reverse?.sourceSignature ||
+      forward?.targetSignature ||
+      reverse?.targetSignature ||
+      null
+    );
+    segments.push({
+      from,
+      to,
+      sourceSignature,
+      targetSignature,
+      rawLabel: forward?.rawLabel || reverse?.rawLabel || null,
+      reverseRawLabel: reverse?.rawLabel || null
+    });
+  }
+  return segments;
 }
 
 function findExitPaths(origin, limit = 10) {
@@ -373,6 +463,7 @@ export async function planRoute({ origin, destination, preference } = {}) {
       destination: destinationName,
       preference: routePreference,
       jSpacePath: [originName],
+      wormholeSegments: [],
       kSpace: null,
       totalJumps: {
         wormhole: 0,
@@ -386,6 +477,7 @@ export async function planRoute({ origin, destination, preference } = {}) {
   if (destinationOnMap) {
     const mapPath = findShortestPath(originName, destinationName);
     if (Array.isArray(mapPath) && mapPath.length > 0) {
+      const wormholeSegments = buildWormholeSegments(mapPath);
       return {
         status: 'ok',
         mode: 'map',
@@ -393,6 +485,7 @@ export async function planRoute({ origin, destination, preference } = {}) {
         destination: destinationName,
         preference: routePreference,
         jSpacePath: mapPath,
+        wormholeSegments,
         kSpace: null,
         totalJumps: {
           wormhole: Math.max(0, mapPath.length - 1),
@@ -436,6 +529,7 @@ export async function planRoute({ origin, destination, preference } = {}) {
         destination: destinationName,
         preference: routePreference,
         jSpacePath: [originName],
+        wormholeSegments: [],
         kSpace: {
           systems: kspaceSystems,
           ids: esiRoute,
@@ -507,6 +601,7 @@ export async function planRoute({ origin, destination, preference } = {}) {
         destination: destinationName,
         preference: routePreference,
         jSpacePath: candidate.path,
+        wormholeSegments: buildWormholeSegments(candidate.path),
         exitSystem: exitName,
         kSpace: {
           systems: kspaceSystems,

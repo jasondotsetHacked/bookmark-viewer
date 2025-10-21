@@ -7,6 +7,74 @@ import { updateRouteGraph, planRoute, getRouteSuggestions, warmRoutePlanner } fr
 const PLACEHOLDER_PATTERN = /^\?+$/;
 const PLACEHOLDER_KEY_COLUMNS = ['Label', 'Type', 'SOL', 'CON', 'REG', 'Date', 'Expiry', 'Creator', 'Jumps'];
 const PLACEHOLDER_FLAG_TOKENS = new Set(['VEOL', 'EOL', 'CRIT', 'HALF', 'STABLE']);
+const SIGNATURE_PREFIX_PATTERN = /^[A-Z0-9]{3}$/;
+const FORCE_LINK_DISTANCE = 100;
+const FORCE_LINK_STRENGTH = 0.65;
+const FORCE_CHARGE_STRENGTH = -10;
+const FORCE_COLLIDE_RADIUS = 50;
+
+function normalizeSignatureToken(value) {
+  if (!value && value !== 0) {
+    return null;
+  }
+  const normalized = value.toString().trim().toUpperCase();
+  if (!SIGNATURE_PREFIX_PATTERN.test(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
+function extractSignaturePrefixFromLabel(label) {
+  if (!label || typeof label !== 'string') {
+    return null;
+  }
+  const cleaned = label.trim().replace(/^[-\s]+/, '');
+  const match = cleaned.match(/^([A-Za-z0-9]{3})\b/);
+  if (!match || !match[1]) {
+    return null;
+  }
+  return normalizeSignatureToken(match[1]);
+}
+
+function extractSignatureSuffixFromTarget(rawTarget) {
+  if (!rawTarget || typeof rawTarget !== 'string') {
+    return null;
+  }
+  const tokens = rawTarget.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) {
+    return null;
+  }
+  for (let index = tokens.length - 1; index >= 1; index -= 1) {
+    const token = tokens[index];
+    if (!token) {
+      continue;
+    }
+    if (token.includes('?')) {
+      break;
+    }
+    const uppercase = token.toUpperCase();
+    const flagCandidate = uppercase.replace(/[^A-Z]/g, '');
+    if (flagCandidate && PLACEHOLDER_FLAG_TOKENS.has(flagCandidate)) {
+      continue;
+    }
+    const sanitized = token.replace(/[^A-Za-z0-9-]/g, '');
+    if (!sanitized) {
+      continue;
+    }
+    if (sanitized.includes('-')) {
+      const [prefixCandidate] = sanitized.split('-');
+      const normalizedPrefix = normalizeSignatureToken(prefixCandidate);
+      if (normalizedPrefix) {
+        return normalizedPrefix;
+      }
+    }
+    const normalized = normalizeSignatureToken(sanitized);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return null;
+}
 
 function buildPlaceholderKey(systemFrom, placeholder, row) {
   const parts = [systemFrom || '', placeholder || ''];
@@ -138,6 +206,9 @@ export function displayMap(data, options = {}) {
   }
   if (previousRuntime?.keyPanelCloseListener) {
     mapContainer.removeEventListener('click', previousRuntime.keyPanelCloseListener);
+  }
+  if (previousRuntime?.bookmarkVisibilityListener) {
+    window.removeEventListener('moduleVisibilityChanged', previousRuntime.bookmarkVisibilityListener);
   }
   let previousPositions = new Map();
   let previousTransform = null;
@@ -405,6 +476,56 @@ export function displayMap(data, options = {}) {
   keyControls.append(keyToggle, keyPanel);
   controlBar.appendChild(keyControls);
 
+  const isBookmarksModuleVisible = () => {
+    const bookmarksModule = document.querySelector('.module[data-module-id="bookmarks"]');
+    if (!bookmarksModule) {
+      return false;
+    }
+    if (bookmarksModule.dataset.visible === 'false') {
+      return false;
+    }
+    if (bookmarksModule.classList.contains('module-hidden')) {
+      return false;
+    }
+    const ariaHidden = bookmarksModule.getAttribute('aria-hidden');
+    if (ariaHidden && ariaHidden.toLowerCase() === 'true') {
+      return false;
+    }
+    return true;
+  };
+
+  const updateButton = document.createElement('button');
+  updateButton.type = 'button';
+  updateButton.className = 'map-update-button';
+  updateButton.textContent = 'Update';
+  updateButton.setAttribute('aria-label', 'Update bookmarks from clipboard');
+  updateButton.title = 'Update bookmarks from clipboard';
+
+  updateButton.addEventListener('click', () => {
+    if (typeof window.readClipboardAndDisplayTable === 'function') {
+      window.readClipboardAndDisplayTable();
+    } else {
+      console.warn('Update button clicked but readClipboardAndDisplayTable is not available.');
+    }
+  });
+
+  const syncUpdateButtonVisibility = () => {
+    const shouldShow = !isBookmarksModuleVisible();
+    updateButton.hidden = !shouldShow;
+  };
+
+  const handleBookmarkModuleVisibilityChange = (event) => {
+    if (!event || event.detail?.moduleId !== 'bookmarks') {
+      return;
+    }
+    syncUpdateButtonVisibility();
+  };
+
+  syncUpdateButtonVisibility();
+  window.addEventListener('moduleVisibilityChanged', handleBookmarkModuleVisibilityChange);
+
+  controlBar.appendChild(updateButton);
+
   const physicsToggle = document.createElement('label');
   physicsToggle.className = 'map-physics-toggle';
   physicsToggle.title = 'Toggle map physics';
@@ -520,6 +641,48 @@ export function displayMap(data, options = {}) {
     return 'NS';
   };
 
+  const buildWormholePathSummary = (plan) => {
+    if (!plan || !Array.isArray(plan.jSpacePath) || plan.jSpacePath.length === 0) {
+      return '';
+    }
+    const pathFallback = plan.jSpacePath.join(' -> ');
+    const segments = Array.isArray(plan.wormholeSegments) ? plan.wormholeSegments : [];
+    if (!segments.length) {
+      return pathFallback;
+    }
+    const tokens = [];
+    let hasRealSignature = false;
+    for (let index = 0; index < plan.jSpacePath.length; index += 1) {
+      const systemName = plan.jSpacePath[index] || '';
+      let nodeLabel = systemName || 'Unknown';
+      if (index < segments.length) {
+        const outgoingSignature = segments[index] && segments[index].sourceSignature
+          ? normalizeSignatureToken(segments[index].sourceSignature)
+          : null;
+        if (outgoingSignature) {
+          nodeLabel = `${nodeLabel} ${outgoingSignature}`;
+          hasRealSignature = true;
+        }
+      }
+      tokens.push(nodeLabel.trim());
+      if (index < segments.length) {
+        const inboundSignature = segments[index] && segments[index].targetSignature
+          ? normalizeSignatureToken(segments[index].targetSignature)
+          : null;
+        if (inboundSignature) {
+          tokens.push(`<-> ${inboundSignature}`);
+          hasRealSignature = true;
+        } else {
+          tokens.push('<-> ???');
+        }
+      }
+    }
+    if (!hasRealSignature) {
+      return pathFallback;
+    }
+    return tokens.join(' ').replace(/\s+/g, ' ').trim();
+  };
+
   const renderRouteSummary = (plan) => {
     if (!routeContext.summary) {
       return;
@@ -533,7 +696,9 @@ export function displayMap(data, options = {}) {
     if (Array.isArray(plan.jSpacePath) && plan.jSpacePath.length > 1) {
       const wormholeLine = document.createElement('p');
       wormholeLine.className = 'map-route-summary-line';
-      wormholeLine.textContent = `Wormhole path (${plan.totalJumps.wormhole} jumps): ${plan.jSpacePath.join(' -> ')}`;
+      const wormholeSummary = buildWormholePathSummary(plan);
+      const fallbackSummary = plan.jSpacePath.join(' -> ');
+      wormholeLine.textContent = `Wormhole path (${plan.totalJumps.wormhole} jumps): ${wormholeSummary || fallbackSummary}`;
       routeContext.summary.appendChild(wormholeLine);
     }
 
@@ -1049,6 +1214,8 @@ export function displayMap(data, options = {}) {
     if (rawLabel.startsWith('-')) {
       const [systemFrom, systemToRaw] = extractSystems(rawLabel, row['SOL']);
       if (systemFrom && systemToRaw) {
+        const sourceSignature = extractSignaturePrefixFromLabel(rawLabel);
+        const targetSignature = extractSignatureSuffixFromTarget(systemToRaw);
         const wormholeClassFromLabel = extractWormholeClass(rawLabel);
         const targetInfo = (() => {
           const tokens = systemToRaw.split(/\s+/).filter(Boolean);
@@ -1166,6 +1333,7 @@ export function displayMap(data, options = {}) {
         if (!candidate) {
           candidate = {
             directions: new Set(),
+            directionDetails: new Map(),
             isVEOL: false,
             isEOL: false,
             isCRIT: false,
@@ -1174,7 +1342,31 @@ export function displayMap(data, options = {}) {
           };
           connectionCandidates.set(candidateKey, candidate);
         }
-        candidate.directions.add(`${systemFrom}|${systemTo}`);
+        const directionKey = `${systemFrom}|${systemTo}`;
+        candidate.directions.add(directionKey);
+        if (!candidate.directionDetails) {
+          candidate.directionDetails = new Map();
+        }
+        let directionMeta = candidate.directionDetails.get(directionKey);
+        if (!directionMeta) {
+          directionMeta = {
+            source: systemFrom,
+            target: systemTo,
+            sourceSignature: null,
+            targetSignature: null,
+            rawLabel: null
+          };
+        }
+        if (!directionMeta.sourceSignature && sourceSignature) {
+          directionMeta.sourceSignature = sourceSignature;
+        }
+        if (!directionMeta.targetSignature && targetSignature) {
+          directionMeta.targetSignature = targetSignature;
+        }
+        if (!directionMeta.rawLabel && rawLabel) {
+          directionMeta.rawLabel = rawLabel;
+        }
+        candidate.directionDetails.set(directionKey, directionMeta);
         candidate.isVEOL = candidate.isVEOL || isVEOL;
         candidate.isEOL = candidate.isEOL || isEOL;
         candidate.isCRIT = candidate.isCRIT || isCRIT;
@@ -1264,12 +1456,16 @@ export function displayMap(data, options = {}) {
     if (!source || !target) {
       return;
     }
+    const directions = candidate.directionDetails
+      ? Array.from(candidate.directionDetails.values())
+      : [];
     connections.push({
       source,
       target,
       isVEOL: candidate.isVEOL,
       isEOL: candidate.isEOL,
-      isCRIT: candidate.isCRIT
+      isCRIT: candidate.isCRIT,
+      directions
     });
   });
 
@@ -1463,7 +1659,8 @@ export function displayMap(data, options = {}) {
     currentTransform,
     settleTimer: null,
     physicsEnabled: desiredPhysicsEnabled,
-    keyPanelCloseListener: null
+    keyPanelCloseListener: null,
+    bookmarkVisibilityListener: handleBookmarkModuleVisibilityChange
   };
   runtimeState.keyPanelCloseListener = handleMapContainerClick;
 
@@ -2157,11 +2354,16 @@ export function displayMap(data, options = {}) {
   const crosshairLayer = g.append('g')
     .attr('class', 'crosshair-layer');
 
+  const linkForceBase = d3.forceLink(links)
+    .id((d) => d.name)
+    .distance(() => FORCE_LINK_DISTANCE)
+    .strength(() => FORCE_LINK_STRENGTH);
+
   const simulation = d3.forceSimulation(nodes)
-    .force('link', d3.forceLink(links).id((d) => d.name).distance(100))
-    .force('charge', d3.forceManyBody().strength(-10))
+    .force('link', linkForceBase)
+    .force('charge', d3.forceManyBody().strength(FORCE_CHARGE_STRENGTH))
     .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collide', d3.forceCollide(50))
+    .force('collide', d3.forceCollide(FORCE_COLLIDE_RADIUS))
     .on('tick', ticked);
 
   if (hasPreviousLayout) {
@@ -2502,6 +2704,7 @@ export function displayMap(data, options = {}) {
   let routeOverlayStateData = null;
 
   clearRouteOverlay = () => {
+    const hadOverlayLinks = Boolean(routeOverlayStateData?.forceLinks?.length);
     let removedVirtualNodes = false;
     if (routeOverlayStateData && Array.isArray(routeOverlayStateData.virtualNodes) && routeOverlayStateData.virtualNodes.length) {
       routeOverlayStateData.virtualNodes.forEach((virtualNode) => {
@@ -2523,17 +2726,19 @@ export function displayMap(data, options = {}) {
       runtimeState.nodes = nodes;
     }
     if (simulation) {
-      if (removedVirtualNodes) {
-        simulation.nodes(nodes);
-      }
+      simulation.nodes(nodes);
       const linkForce = simulation.force('link');
       if (linkForce) {
-        linkForce.links(links);
+        linkForce
+          .links(links)
+          .distance(() => FORCE_LINK_DISTANCE)
+          .strength(() => FORCE_LINK_STRENGTH);
       }
-      if (removedVirtualNodes) {
+      if (removedVirtualNodes || hadOverlayLinks) {
         simulation.alpha(0.55).restart();
       }
       runtimeState.nodes = nodes;
+      syncPhysicsSimulation();
     }
     routeOverlayLineGroup.selectAll('*').remove();
     routeOverlayNodeGroup.selectAll('*').remove();
@@ -2575,7 +2780,6 @@ export function displayMap(data, options = {}) {
     }
 
     const virtualNodes = [];
-    const virtualLinks = [];
     const overlaySegments = [];
     const overlayLabelNodes = [];
     const newlyCreatedNodeMap = new Map();
@@ -2644,19 +2848,6 @@ export function displayMap(data, options = {}) {
           target: currentNode,
           key: segmentKey
         });
-
-        const previousVirtual = Boolean(previousNode.isRouteVirtual);
-        const currentVirtual = Boolean(currentNode.isRouteVirtual);
-        if (previousVirtual || currentVirtual) {
-          const connectionKey = buildConnectionKey(previousNode.name, currentNode.name);
-          if (!existingConnectionKeys.has(connectionKey)) {
-            virtualLinks.push({
-              source: previousNode,
-              target: currentNode,
-              isRouteVirtual: true
-            });
-          }
-        }
       }
       if (currentNode.isRouteVirtual) {
         overlayLabelNodes.push(currentNode);
@@ -2664,24 +2855,28 @@ export function displayMap(data, options = {}) {
       previousNode = currentNode;
     });
 
+    const overlayForceLinks = overlaySegments.map((segment) => ({
+      source: segment.source,
+      target: segment.target,
+      isRouteOverlay: true
+    }));
+
     const linkForce = simulation.force('link');
     if (linkForce) {
-      if (virtualLinks.length) {
-        linkForce.links(links.concat(virtualLinks));
-      } else {
-        linkForce.links(links);
-      }
+      const combinedLinks = overlayForceLinks.length ? links.concat(overlayForceLinks) : links;
+      linkForce
+        .links(combinedLinks)
+        .distance(() => FORCE_LINK_DISTANCE)
+        .strength(() => FORCE_LINK_STRENGTH);
     }
-    if (virtualNodes.length) {
-      runtimeState.nodes = nodes;
-      simulation.nodes(nodes);
-      simulation.alpha(0.9).restart();
-      syncPhysicsSimulation();
-    }
+    runtimeState.nodes = nodes;
+    simulation.nodes(nodes);
+    simulation.alpha(0.9).restart();
+    syncPhysicsSimulation();
 
     routeOverlayStateData = {
       virtualNodes,
-      virtualLinks,
+      forceLinks: overlayForceLinks,
       segments: overlaySegments,
       labelNodes: overlayLabelNodes
     };
