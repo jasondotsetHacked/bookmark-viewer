@@ -702,11 +702,24 @@ export function displayMap(data, options = {}) {
       routeContext.summary.appendChild(wormholeLine);
     }
 
-    if (plan.mode === 'hybrid' && plan.kSpace) {
-      const exitLine = document.createElement('p');
-      exitLine.className = 'map-route-summary-line';
-      exitLine.textContent = `Exit to K-space: ${plan.exitSystem}`;
-      routeContext.summary.appendChild(exitLine);
+    if (plan.bridge && (plan.bridge.fromSystem || plan.bridge.toSystem)) {
+      const { fromSystem, toSystem } = plan.bridge;
+      let bridgeText = '';
+      if (fromSystem && toSystem && fromSystem !== toSystem) {
+        bridgeText = `K-space leg: ${fromSystem} -> ${toSystem}`;
+      } else if (fromSystem && !toSystem) {
+        bridgeText = `Enter K-space at ${fromSystem}`;
+      } else if (!fromSystem && toSystem) {
+        bridgeText = `Return from K-space at ${toSystem}`;
+      } else if (fromSystem && toSystem) {
+        bridgeText = `K-space system: ${fromSystem}`;
+      }
+      if (bridgeText) {
+        const bridgeLine = document.createElement('p');
+        bridgeLine.className = 'map-route-summary-line';
+        bridgeLine.textContent = bridgeText;
+        routeContext.summary.appendChild(bridgeLine);
+      }
     }
 
     if (plan.kSpace && Array.isArray(plan.kSpace.systems) && plan.kSpace.systems.length > 1) {
@@ -2755,27 +2768,7 @@ export function displayMap(data, options = {}) {
 
     const jSpaceSequence = Array.isArray(plan.jSpacePath) ? plan.jSpacePath.filter(Boolean) : [];
     const kSpaceSequence = Array.isArray(plan.kSpace?.systems) ? plan.kSpace.systems.filter(Boolean) : [];
-    if (!jSpaceSequence.length && !kSpaceSequence.length) {
-      return;
-    }
-
-    const combinedPath = [];
-    jSpaceSequence.forEach((entry) => {
-      const cleaned = entry ? entry.toString().trim() : '';
-      if (cleaned && combinedPath[combinedPath.length - 1] !== cleaned) {
-        combinedPath.push(cleaned);
-      }
-    });
-    kSpaceSequence.forEach((entry) => {
-      const cleaned = entry ? entry.toString().trim() : '';
-      if (!cleaned) {
-        return;
-      }
-      if (combinedPath[combinedPath.length - 1] !== cleaned) {
-        combinedPath.push(cleaned);
-      }
-    });
-    if (!combinedPath.length) {
+    if (!kSpaceSequence.length) {
       return;
     }
 
@@ -2832,7 +2825,7 @@ export function displayMap(data, options = {}) {
     };
 
     let previousNode = null;
-    combinedPath.forEach((systemName, index) => {
+    kSpaceSequence.forEach((systemName, index) => {
       const cleaned = systemName ? systemName.toString().trim() : '';
       if (!cleaned) {
         return;
@@ -2965,15 +2958,13 @@ export function displayMap(data, options = {}) {
         .attr('cy', (d) => Number.isFinite(d.y) ? d.y : 0);
 
       routeOverlayLabelGroup.selectAll('text')
-        .data(labelNodes, (d) => d.name)
+      .data(labelNodes, (d) => d.name)
         .attr('x', (d) => Number.isFinite(d.x) ? d.x : 0)
         .attr('y', (d) => Number.isFinite(d.y) ? d.y - 14 : 0);
     };
 
     updateRouteOverlayPositions();
-  };
-
-  if (currentRoutePlan && currentRoutePlan.status === 'ok') {
+  };  if (currentRoutePlan && currentRoutePlan.status === 'ok') {
     if (Array.isArray(currentRoutePlan.jSpacePath) && currentRoutePlan.jSpacePath.length) {
       applyRouteHighlight(currentRoutePlan.jSpacePath);
     }

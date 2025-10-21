@@ -16,6 +16,10 @@ const state = {
   edgeMetadata: new Map()
 };
 
+const MAX_KSPACE_CANDIDATES = 12;
+
+const esiRouteCache = new Map();
+
 const SIGNATURE_TOKEN_REGEX = /^[A-Z0-9]{3}$/;
 
 function normalizeSignatureToken(value) {
@@ -192,15 +196,7 @@ export function updateRouteGraph({ nodes = [], links = [], systemRecords = {} } 
   state.edgeMetadata = edgeMetadata;
 }
 
-function resolveOriginName(rawName) {
-  const normalized = normalizeName(rawName);
-  if (!normalized) {
-    return null;
-  }
-  return state.mapNodesByLower.get(normalized) || null;
-}
-
-async function resolveDestinationName(rawName) {
+function resolveSystemName(rawName) {
   const normalized = normalizeName(rawName);
   if (!normalized) {
     return null;
@@ -208,7 +204,6 @@ async function resolveDestinationName(rawName) {
   if (state.mapNodesByLower.has(normalized)) {
     return state.mapNodesByLower.get(normalized);
   }
-  await ensureSystemsIndex();
   if (state.systemsByLower.has(normalized)) {
     return state.systemsByLower.get(normalized).name;
   }
@@ -330,18 +325,31 @@ function buildWormholeSegments(path) {
   return segments;
 }
 
-function findExitPaths(origin, limit = 10) {
-  const graph = state.graph;
-  const exits = [];
-
-  if (!graph.has(origin)) {
-    return exits;
+function findPathsToClassification(start, classification, limit = 10, options = {}) {
+  const results = [];
+  if (!start || !classification) {
+    return results;
   }
 
-  const queue = [origin];
-  const parents = new Map([[origin, null]]);
+  const includeStart = options.includeStart === true;
+  const graph = state.graph;
 
-  while (queue.length > 0 && exits.length < limit) {
+  if (!graph.has(start)) {
+    if (includeStart && classifySystem(start) === classification) {
+      results.push({ node: start, path: [start] });
+    }
+    return results;
+  }
+
+  const queue = [start];
+  const parents = new Map([[start, null]]);
+  const seen = new Set([start]);
+
+  if (includeStart && classifySystem(start) === classification) {
+    results.push({ node: start, path: [start] });
+  }
+
+  while (queue.length > 0 && results.length < limit) {
     const current = queue.shift();
     const neighbors = graph.get(current);
     if (!neighbors) {
@@ -349,24 +357,148 @@ function findExitPaths(origin, limit = 10) {
     }
 
     for (const neighbor of neighbors) {
-      if (parents.has(neighbor)) {
+      if (seen.has(neighbor)) {
         continue;
       }
+      seen.add(neighbor);
       parents.set(neighbor, current);
-      queue.push(neighbor);
 
-      const classification = classifySystem(neighbor);
-      if (classification === 'kspace') {
+      if (classifySystem(neighbor) === classification) {
         const path = reconstructPath(neighbor, parents);
-        exits.push({ exit: neighbor, path });
-        if (exits.length >= limit) {
+        results.push({ node: neighbor, path });
+        if (results.length >= limit) {
           break;
         }
       }
+
+      queue.push(neighbor);
     }
   }
 
-  return exits;
+  return results;
+}
+
+function mapRouteIdsToNames(routeIds) {
+  if (!Array.isArray(routeIds)) {
+    return [];
+  }
+  return routeIds.map((id) => state.systemsById.get(id)?.name || id.toString());
+}
+
+async function getCachedEsiRoute(originId, destinationId, preference) {
+  if (typeof originId !== 'number' || typeof destinationId !== 'number') {
+    throw new Error('ESI route lookup requires numeric system IDs.');
+  }
+  const sanitized = sanitizePreference(preference);
+  const key = `${originId}|${destinationId}|${sanitized}`;
+  if (esiRouteCache.has(key)) {
+    return esiRouteCache.get(key);
+  }
+  const route = await fetchEsiRoute(originId, destinationId, sanitized);
+  esiRouteCache.set(key, route);
+  return route;
+}
+
+function aggregateKSpaceSegments(segments) {
+  if (!Array.isArray(segments) || !segments.length) {
+    return null;
+  }
+
+  const systems = [];
+  const ids = [];
+  let jumpCount = 0;
+
+  segments.forEach((segment) => {
+    if (!segment) {
+      return;
+    }
+    const routeSystems = Array.isArray(segment.systems) ? segment.systems : [];
+    routeSystems.forEach((system) => {
+      const cleaned = typeof system === 'string' ? system : (system?.toString?.() || '');
+      if (!cleaned) {
+        return;
+      }
+      if (!systems.length || systems[systems.length - 1] !== cleaned) {
+        systems.push(cleaned);
+      }
+    });
+
+    const routeIds = Array.isArray(segment.ids) ? segment.ids : [];
+    routeIds.forEach((value) => {
+      if (!ids.length || ids[ids.length - 1] !== value) {
+        ids.push(value);
+      }
+    });
+
+    if (Number.isFinite(segment.jumpCount)) {
+      jumpCount += segment.jumpCount;
+    }
+  });
+
+  return {
+    systems,
+    ids,
+    jumpCount,
+    segments: segments.map((segment) => ({ ...segment }))
+  };
+}
+
+function combinePathSegments(segments) {
+  const combined = [];
+  segments.forEach((segment) => {
+    if (!Array.isArray(segment) || !segment.length) {
+      return;
+    }
+    segment.forEach((entry, index) => {
+      const value = typeof entry === 'string' ? entry : (entry?.toString?.() || '');
+      if (!value) {
+        return;
+      }
+      if (!combined.length) {
+        combined.push(value);
+        return;
+      }
+      if (combined[combined.length - 1] === value && index === 0) {
+        return;
+      }
+      if (combined[combined.length - 1] !== value) {
+        combined.push(value);
+      }
+    });
+  });
+  return combined;
+}
+
+function reverseWormholeSegments(segments) {
+  if (!Array.isArray(segments) || !segments.length) {
+    return [];
+  }
+  return segments.slice().reverse().map((segment) => ({
+    from: segment.to,
+    to: segment.from,
+    sourceSignature: segment.targetSignature || null,
+    targetSignature: segment.sourceSignature || null,
+    rawLabel: segment.reverseRawLabel || segment.rawLabel || null,
+    reverseRawLabel: segment.rawLabel || null
+  }));
+}
+
+function aggregateSingleKSpaceRoute(routeIds) {
+  if (!Array.isArray(routeIds) || !routeIds.length) {
+    return null;
+  }
+  const jumpCount = Math.max(0, routeIds.length - 1);
+  const segment = {
+    systems: mapRouteIdsToNames(routeIds),
+    ids: routeIds,
+    jumpCount
+  };
+  return aggregateKSpaceSegments([segment]) || {
+    systems: segment.systems,
+    ids: segment.ids,
+    jumpCount: segment.jumpCount,
+    segments: [segment]
+  };
 }
 
 async function fetchEsiRoute(originId, destinationId, preference) {
@@ -414,11 +546,11 @@ async function fetchEsiRoute(originId, destinationId, preference) {
 }
 
 export async function planRoute({ origin, destination, preference } = {}) {
-  if (!origin) {
+  if (!origin || !origin.toString().trim()) {
     return {
       status: 'error',
       reason: 'origin_missing',
-      message: 'Select an origin system on the map before planning a route.'
+      message: 'Enter an origin system to plan a route.'
     };
   }
 
@@ -433,16 +565,16 @@ export async function planRoute({ origin, destination, preference } = {}) {
   const routePreference = sanitizePreference(preference);
   await ensureSystemsIndex();
 
-  const originName = resolveOriginName(origin);
+  const originName = resolveSystemName(origin);
   if (!originName) {
     return {
       status: 'error',
-      reason: 'origin_not_on_map',
-      message: 'The selected origin system is no longer part of the current map.'
+      reason: 'origin_not_found',
+      message: `Could not find "${origin}" in the known systems list.`
     };
   }
 
-  const destinationName = await resolveDestinationName(destination);
+  const destinationName = resolveSystemName(destination) || null;
   if (!destinationName) {
     return {
       status: 'error',
@@ -453,7 +585,11 @@ export async function planRoute({ origin, destination, preference } = {}) {
 
   const originNode = getMapNode(originName);
   const destinationNode = getMapNode(destinationName);
+  const originOnMap = Boolean(originNode);
   const destinationOnMap = Boolean(destinationNode);
+
+  const originClassification = classifySystem(originName);
+  const destinationClassification = classifySystem(destinationName);
 
   if (originName === destinationName) {
     return {
@@ -462,9 +598,12 @@ export async function planRoute({ origin, destination, preference } = {}) {
       origin: originName,
       destination: destinationName,
       preference: routePreference,
+      originType: originClassification,
+      destinationType: destinationClassification,
       jSpacePath: [originName],
       wormholeSegments: [],
       kSpace: null,
+      bridge: null,
       totalJumps: {
         wormhole: 0,
         kspace: 0,
@@ -474,66 +613,63 @@ export async function planRoute({ origin, destination, preference } = {}) {
     };
   }
 
-  if (destinationOnMap) {
-    const mapPath = findShortestPath(originName, destinationName);
-    if (Array.isArray(mapPath) && mapPath.length > 0) {
-      const wormholeSegments = buildWormholeSegments(mapPath);
-      return {
-        status: 'ok',
-        mode: 'map',
-        origin: originName,
-        destination: destinationName,
-        preference: routePreference,
-        jSpacePath: mapPath,
-        wormholeSegments,
-        kSpace: null,
-        totalJumps: {
-          wormhole: Math.max(0, mapPath.length - 1),
-          kspace: 0,
-          total: Math.max(0, mapPath.length - 1)
-        },
-        message: `Found a mapped route to ${destinationName}.`
-      };
-    }
-  }
-
-  const destinationClassification = classifySystem(destinationName);
-  const originClassification = classifySystem(originName);
-
-  if (destinationClassification === 'wormhole' && !destinationOnMap) {
+  const onMapRoute = originOnMap && destinationOnMap ? findShortestPath(originName, destinationName) : null;
+  if (Array.isArray(onMapRoute) && onMapRoute.length > 0) {
+    const wormholeSegments = buildWormholeSegments(onMapRoute);
+    const wormholeJumpCount = Math.max(0, onMapRoute.length - 1);
     return {
-      status: 'error',
-      reason: 'destination_unmapped',
-      message: `${destinationName} is a wormhole system that is not on your map yet.`
+      status: 'ok',
+      mode: 'map',
+      origin: originName,
+      destination: destinationName,
+      preference: routePreference,
+  originType: originClassification,
+  destinationType: destinationClassification,
+      jSpacePath: onMapRoute,
+      wormholeSegments,
+      kSpace: null,
+      bridge: null,
+      totalJumps: {
+        wormhole: wormholeJumpCount,
+        kspace: 0,
+        total: wormholeJumpCount
+      },
+      message: `Found a mapped route to ${destinationName}.`
     };
   }
 
-  if (originClassification === 'kspace' && destinationClassification === 'kspace') {
-    const originInfo = state.systemsByName.get(originName);
-    const destinationInfo = state.systemsByName.get(destinationName);
-    if (!originInfo || !destinationInfo) {
-      return {
-        status: 'error',
-        reason: 'kspace_lookup_failed',
-        message: 'Unable to locate K-space system IDs for the selected route.'
-      };
+  const originInfo = state.systemsByName.get(originName) || null;
+  const destinationInfo = state.systemsByName.get(destinationName) || null;
+
+  const bestPlanCandidates = [];
+
+  const pushPlan = (candidate) => {
+    if (!candidate) {
+      return;
     }
+    bestPlanCandidates.push(candidate);
+  };
+
+  // Direct K-space routing using ESI when both endpoints are in known space
+  if (originClassification === 'kspace' && destinationClassification === 'kspace' && originInfo && destinationInfo) {
     try {
-      const esiRoute = await fetchEsiRoute(originInfo.id, destinationInfo.id, routePreference);
-      const jumpCount = Math.max(0, esiRoute.length - 1);
-      const kspaceSystems = esiRoute.map((id) => state.systemsById.get(id)?.name || id.toString());
-      return {
+      const esiRoute = await getCachedEsiRoute(originInfo.id, destinationInfo.id, routePreference);
+      const aggregatedKSpace = aggregateSingleKSpaceRoute(esiRoute);
+      const jumpCount = aggregatedKSpace?.jumpCount ?? Math.max(0, esiRoute.length - 1);
+      pushPlan({
         status: 'ok',
         mode: 'kspace',
         origin: originName,
         destination: destinationName,
         preference: routePreference,
+        originType: originClassification,
+        destinationType: destinationClassification,
         jSpacePath: [originName],
         wormholeSegments: [],
-        kSpace: {
-          systems: kspaceSystems,
-          ids: esiRoute,
-          jumpCount
+        kSpace: aggregatedKSpace,
+        bridge: {
+          fromSystem: originName,
+          toSystem: destinationName
         },
         totalJumps: {
           wormhole: 0,
@@ -541,103 +677,196 @@ export async function planRoute({ origin, destination, preference } = {}) {
           total: jumpCount
         },
         message: `Plotted a ${jumpCount}-jump K-space route to ${destinationName}.`
-      };
+      });
     } catch (error) {
-      console.error('routePlanner: ESI route failed for K-space origin', error);
-      return {
-        status: 'error',
-        reason: 'esi_route_failed',
-        message: 'ESI could not provide a stargate route between the selected systems.',
-        details: error.message
-      };
+      console.warn('routePlanner: ESI route failed for direct K-space path', error);
     }
   }
 
-  if (originClassification !== 'wormhole') {
-    return {
-      status: 'error',
-      reason: 'origin_not_wormhole',
-      message: 'Hybrid routing requires the origin to be a wormhole mapped on your grid.'
-    };
-  }
+  const originExitCandidates = originClassification === 'wormhole'
+    ? findPathsToClassification(originName, 'kspace', MAX_KSPACE_CANDIDATES)
+        .filter((candidate) => Array.isArray(candidate.path) && candidate.path.length >= 2)
+    : [];
 
-  const exitCandidates = findExitPaths(originName, 10);
-  if (!exitCandidates.length) {
-    return {
-      status: 'error',
-      reason: 'no_exit_found',
-      message: 'No mapped exits to K-space were found from the selected origin.'
-    };
-  }
+  const destinationEntryCandidates = destinationClassification === 'wormhole'
+    ? findPathsToClassification(destinationName, 'kspace', MAX_KSPACE_CANDIDATES)
+        .filter((candidate) => Array.isArray(candidate.path) && candidate.path.length >= 2)
+    : [];
 
-  const destinationInfo = state.systemsByName.get(destinationName);
-  if (!destinationInfo || typeof destinationInfo.id !== 'number') {
-    return {
-      status: 'error',
-      reason: 'destination_id_missing',
-      message: `Unable to look up the system ID for ${destinationName}.`
-    };
-  }
-
-  let bestPlan = null;
-
-  for (const candidate of exitCandidates) {
-    const exitName = candidate.exit;
-    const exitInfo = state.systemsByName.get(exitName);
-    if (!exitInfo || typeof exitInfo.id !== 'number') {
-      continue;
-    }
-    try {
-      const esiRoute = await fetchEsiRoute(exitInfo.id, destinationInfo.id, routePreference);
-      const wormholeHops = Math.max(0, candidate.path.length - 1);
-      const kspaceJumps = Math.max(0, esiRoute.length - 1);
-      const kspaceSystems = esiRoute.map((id) => state.systemsById.get(id)?.name || id.toString());
-      const total = wormholeHops + kspaceJumps;
-
-      const planCandidate = {
-        status: 'ok',
-        mode: 'hybrid',
-        origin: originName,
-        destination: destinationName,
-        preference: routePreference,
-        jSpacePath: candidate.path,
-        wormholeSegments: buildWormholeSegments(candidate.path),
-        exitSystem: exitName,
-        kSpace: {
-          systems: kspaceSystems,
-          ids: esiRoute,
-          jumpCount: kspaceJumps
-        },
-        totalJumps: {
-          wormhole: wormholeHops,
-          kspace: kspaceJumps,
-          total
-        },
-        message: `Hybrid route via ${exitName} with ${wormholeHops} wormhole jumps and ${kspaceJumps} K-space jumps.`
-      };
-
-      if (!bestPlan) {
-        bestPlan = planCandidate;
-      } else if (planCandidate.totalJumps.total < bestPlan.totalJumps.total) {
-        bestPlan = planCandidate;
-      } else if (planCandidate.totalJumps.total === bestPlan.totalJumps.total &&
-        planCandidate.totalJumps.wormhole < bestPlan.totalJumps.wormhole) {
-        bestPlan = planCandidate;
+  // Wormhole origin to K-space destination
+  if (originExitCandidates.length && destinationClassification === 'kspace' && destinationInfo && typeof destinationInfo.id === 'number') {
+    for (const candidate of originExitCandidates) {
+      const exitName = candidate.node;
+      const exitInfo = state.systemsByName.get(exitName) || null;
+      if (!exitInfo || typeof exitInfo.id !== 'number') {
+        continue;
       }
-    } catch (error) {
-      console.warn(`routePlanner: ESI route failed for exit ${exitName}`, error);
+      try {
+        const esiRoute = await getCachedEsiRoute(exitInfo.id, destinationInfo.id, routePreference);
+        const aggregatedKSpace = aggregateSingleKSpaceRoute(esiRoute);
+        if (!aggregatedKSpace) {
+          continue;
+        }
+        const wormholeSegments = buildWormholeSegments(candidate.path);
+        const wormholeJumps = Math.max(0, candidate.path.length - 1);
+        const kspaceJumps = aggregatedKSpace.jumpCount ?? Math.max(0, esiRoute.length - 1);
+        pushPlan({
+          status: 'ok',
+          mode: 'hybrid',
+          origin: originName,
+          destination: destinationName,
+          preference: routePreference,
+          originType: originClassification,
+          destinationType: destinationClassification,
+          jSpacePath: candidate.path,
+          wormholeSegments,
+          kSpace: aggregatedKSpace,
+          bridge: {
+            fromSystem: exitName,
+            toSystem: destinationName
+          },
+          totalJumps: {
+            wormhole: wormholeJumps,
+            kspace: kspaceJumps,
+            total: wormholeJumps + kspaceJumps
+          },
+          message: `Hybrid route via ${exitName} with ${wormholeJumps} wormhole jumps and ${kspaceJumps} K-space jumps.`
+        });
+      } catch (error) {
+        console.warn(`routePlanner: ESI route failed from ${exitName} to ${destinationName}`, error);
+      }
     }
   }
 
-  if (bestPlan) {
-    return bestPlan;
+  // K-space origin to wormhole destination
+  if (destinationEntryCandidates.length && originClassification === 'kspace' && originInfo && typeof originInfo.id === 'number') {
+    for (const candidate of destinationEntryCandidates) {
+      const entryName = candidate.node;
+      const entryInfo = state.systemsByName.get(entryName) || null;
+      if (!entryInfo || typeof entryInfo.id !== 'number') {
+        continue;
+      }
+      try {
+        const esiRoute = await getCachedEsiRoute(originInfo.id, entryInfo.id, routePreference);
+        const aggregatedKSpace = aggregateSingleKSpaceRoute(esiRoute);
+        if (!aggregatedKSpace) {
+          continue;
+        }
+        const wormholePath = [...candidate.path].reverse();
+        const wormholeSegments = buildWormholeSegments(wormholePath);
+        const wormholeJumps = Math.max(0, wormholePath.length - 1);
+        const kspaceJumps = aggregatedKSpace.jumpCount ?? Math.max(0, esiRoute.length - 1);
+        pushPlan({
+          status: 'ok',
+          mode: 'hybrid',
+          origin: originName,
+          destination: destinationName,
+          preference: routePreference,
+          originType: originClassification,
+          destinationType: destinationClassification,
+          jSpacePath: wormholePath,
+          wormholeSegments,
+          kSpace: aggregatedKSpace,
+          bridge: {
+            fromSystem: originName,
+            toSystem: entryName
+          },
+          totalJumps: {
+            wormhole: wormholeJumps,
+            kspace: kspaceJumps,
+            total: wormholeJumps + kspaceJumps
+          },
+          message: `Hybrid route entering J-space through ${entryName} with ${wormholeJumps} wormhole jumps and ${kspaceJumps} K-space jumps.`
+        });
+      } catch (error) {
+        console.warn(`routePlanner: ESI route failed from ${originName} to ${entryName}`, error);
+      }
+    }
   }
 
-  return {
-    status: 'error',
-    reason: 'esi_route_failed',
-    message: 'No valid hybrid route could be computed via ESI. Try again later or pick another destination.'
-  };
+  // Wormhole origin to wormhole destination via K-space bridge
+  if (originExitCandidates.length && destinationEntryCandidates.length) {
+    for (const originCandidate of originExitCandidates) {
+      const exitName = originCandidate.node;
+      const exitInfo = state.systemsByName.get(exitName) || null;
+      if (!exitInfo || typeof exitInfo.id !== 'number') {
+        continue;
+      }
+      for (const destinationCandidate of destinationEntryCandidates) {
+        const entryName = destinationCandidate.node;
+        const entryInfo = state.systemsByName.get(entryName) || null;
+        if (!entryInfo || typeof entryInfo.id !== 'number') {
+          continue;
+        }
+        try {
+          const esiRoute = await getCachedEsiRoute(exitInfo.id, entryInfo.id, routePreference);
+          const aggregatedKSpace = aggregateSingleKSpaceRoute(esiRoute);
+          if (!aggregatedKSpace) {
+            continue;
+          }
+          const originPath = originCandidate.path;
+          const destinationPath = destinationCandidate.path;
+          const reversedDestinationPath = [...destinationPath].reverse();
+          const jSpacePath = combinePathSegments([originPath, reversedDestinationPath]);
+          const originSegments = buildWormholeSegments(originPath);
+          const destinationSegments = reverseWormholeSegments(buildWormholeSegments(destinationPath));
+          const wormholeSegments = originSegments.concat(destinationSegments);
+          const wormholeJumps = Math.max(0, originPath.length - 1) + Math.max(0, destinationPath.length - 1);
+          const kspaceJumps = aggregatedKSpace.jumpCount ?? Math.max(0, esiRoute.length - 1);
+          pushPlan({
+            status: 'ok',
+            mode: 'hybrid',
+            origin: originName,
+            destination: destinationName,
+            preference: routePreference,
+            originType: originClassification,
+            destinationType: destinationClassification,
+            jSpacePath,
+            wormholeSegments,
+            kSpace: aggregatedKSpace,
+            bridge: {
+              fromSystem: exitName,
+              toSystem: entryName
+            },
+            totalJumps: {
+              wormhole: wormholeJumps,
+              kspace: kspaceJumps,
+              total: wormholeJumps + kspaceJumps
+            },
+            message: `Hybrid route via ${exitName} and ${entryName} with ${wormholeJumps} wormhole jumps and ${kspaceJumps} K-space jumps.`
+          });
+        } catch (error) {
+          console.warn(`routePlanner: ESI route failed between ${exitName} and ${entryName}`, error);
+        }
+      }
+    }
+  }
+
+  if (bestPlanCandidates.length === 0) {
+    return {
+      status: 'error',
+      reason: 'route_not_found',
+      message: 'Unable to compute a route between the selected systems.'
+    };
+  }
+
+  bestPlanCandidates.sort((a, b) => {
+    const totalDiff = (a.totalJumps?.total ?? Infinity) - (b.totalJumps?.total ?? Infinity);
+    if (totalDiff !== 0) {
+      return totalDiff;
+    }
+    const wormholeDiff = (a.totalJumps?.wormhole ?? Infinity) - (b.totalJumps?.wormhole ?? Infinity);
+    if (wormholeDiff !== 0) {
+      return wormholeDiff;
+    }
+    const kspaceDiff = (a.totalJumps?.kspace ?? Infinity) - (b.totalJumps?.kspace ?? Infinity);
+    if (kspaceDiff !== 0) {
+      return kspaceDiff;
+    }
+    return 0;
+  });
+
+  return bestPlanCandidates[0];
 }
 
 export async function getRouteSuggestions(query, limit = 10) {
