@@ -135,6 +135,9 @@ export function displayMap(data, options = {}) {
   if (previousRuntime?.settleTimer) {
     clearTimeout(previousRuntime.settleTimer);
   }
+  if (previousRuntime?.keyPanelCloseListener) {
+    mapContainer.removeEventListener('click', previousRuntime.keyPanelCloseListener);
+  }
   let previousPositions = new Map();
   let previousTransform = null;
   let previousPhysicsEnabled = false;
@@ -225,6 +228,95 @@ export function displayMap(data, options = {}) {
   searchControls.append(searchToggle, searchPanel);
   controlBar.appendChild(searchControls);
 
+  const keyControls = document.createElement('div');
+  keyControls.className = 'map-key-controls';
+
+  const keyToggle = document.createElement('button');
+  keyToggle.type = 'button';
+  keyToggle.className = 'map-key-toggle';
+  keyToggle.setAttribute('aria-haspopup', 'true');
+  keyToggle.setAttribute('aria-expanded', 'false');
+  keyToggle.setAttribute('aria-label', 'Show map color key');
+  keyToggle.title = 'Show map color key';
+  keyToggle.textContent = 'Key';
+
+  const keyPanel = document.createElement('div');
+  keyPanel.className = 'map-key-panel';
+  keyPanel.hidden = true;
+
+  const keyIdBase = `${Date.now().toString(36)}-${Math.floor(Math.random() * 1000).toString(36)}`;
+  const keyPanelId = `map-key-panel-${keyIdBase}`;
+  const keyHeadingId = `map-key-heading-${keyIdBase}`;
+  keyPanel.id = keyPanelId;
+  keyToggle.setAttribute('aria-controls', keyPanelId);
+
+  const keyHeading = document.createElement('p');
+  keyHeading.className = 'map-key-heading';
+  keyHeading.id = keyHeadingId;
+  keyHeading.textContent = 'Color Key';
+
+  keyPanel.setAttribute('role', 'region');
+  keyPanel.setAttribute('aria-labelledby', keyHeadingId);
+
+  const connectionLegend = [
+    { label: 'Stable', colorLabel: 'Green', swatch: '#00ff00' },
+    { label: 'End of Life', colorLabel: 'Purple', swatch: '#800080' },
+    { label: 'Critical', colorLabel: 'Orange', swatch: '#FFA500' },
+    { label: 'Very End of Life', colorLabel: 'Red', swatch: '#FF0000' },
+    { label: 'EOL + Critical', colorLabel: 'Purple -> Orange', swatch: 'linear-gradient(135deg, #800080 0%, #FFA500 100%)' },
+    { label: 'VEOL + Critical', colorLabel: 'Red -> Orange', swatch: 'linear-gradient(135deg, #FF0000 0%, #FFA500 100%)' }
+  ];
+
+  const systemLegend = [
+    { label: '@HOME / @FRIENDLY', colorLabel: 'Neon Green', swatch: '#00ff00' },
+    { label: '@HOLD', colorLabel: 'Yellow', swatch: '#ffeb3b' },
+    { label: '@DANGER', colorLabel: 'Red', swatch: '#ff0000' },
+    { label: '@SCAN', colorLabel: 'Teal', swatch: '#008080' },
+    { label: 'No Status', colorLabel: 'Light Grey', swatch: '#d3d3d3' }
+  ];
+
+  const createLegendSection = (sectionTitle, entryList) => {
+    const section = document.createElement('div');
+    section.className = 'map-key-section';
+
+    const title = document.createElement('p');
+    title.className = 'map-key-section-title';
+    title.textContent = sectionTitle;
+    section.appendChild(title);
+
+    const list = document.createElement('ul');
+    list.className = 'map-key-list';
+
+    entryList.forEach((entry) => {
+      const listItem = document.createElement('li');
+      listItem.className = 'map-key-item';
+
+      const swatch = document.createElement('span');
+      swatch.className = 'map-key-swatch';
+      swatch.style.background = entry.swatch;
+      listItem.appendChild(swatch);
+
+      const label = document.createElement('span');
+      label.className = 'map-key-label';
+      label.textContent = `${entry.label} = ${entry.colorLabel}`;
+      listItem.appendChild(label);
+
+      list.appendChild(listItem);
+    });
+
+    section.appendChild(list);
+    return section;
+  };
+
+  keyPanel.append(
+    keyHeading,
+    createLegendSection('Connections', connectionLegend),
+    createLegendSection('Systems', systemLegend)
+  );
+
+  keyControls.append(keyToggle, keyPanel);
+  controlBar.appendChild(keyControls);
+
   const physicsToggle = document.createElement('label');
   physicsToggle.className = 'map-physics-toggle';
   physicsToggle.title = 'Toggle map physics';
@@ -278,6 +370,12 @@ export function displayMap(data, options = {}) {
     message: searchMessage
   };
 
+  const keyContext = {
+    controls: keyControls,
+    toggle: keyToggle,
+    panel: keyPanel
+  };
+
   const suggestionIdPrefix = `map-search-suggestion-${Date.now().toString(36)}-${Math.floor(Math.random() * 1000)}`;
   searchSuggestions.id = `${suggestionIdPrefix}-list`;
   searchInput.setAttribute('aria-controls', searchSuggestions.id);
@@ -291,6 +389,7 @@ export function displayMap(data, options = {}) {
 
   searchToggle.addEventListener('click', (event) => {
     event.stopPropagation();
+    closeKeyPanel();
     toggleSearchPanel();
   });
 
@@ -300,6 +399,49 @@ export function displayMap(data, options = {}) {
   });
 
   searchPanel.addEventListener('click', (event) => event.stopPropagation());
+
+  keyToggle.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (keyPanel.hidden) {
+      closeSearchPanel();
+      openKeyPanel();
+    } else {
+      closeKeyPanel();
+    }
+  });
+
+  keyPanel.addEventListener('click', (event) => event.stopPropagation());
+
+  function openKeyPanel() {
+    if (!keyContext.panel || !keyContext.toggle) {
+      return;
+    }
+    if (!keyContext.panel.hidden) {
+      return;
+    }
+    keyContext.panel.hidden = false;
+    keyContext.toggle.setAttribute('aria-expanded', 'true');
+    keyContext.controls?.classList.add('is-open');
+    keyContext.toggle.classList.add('is-active');
+  }
+
+  function closeKeyPanel() {
+    if (!keyContext.panel || !keyContext.toggle) {
+      return;
+    }
+    if (keyContext.panel.hidden) {
+      return;
+    }
+    keyContext.panel.hidden = true;
+    keyContext.toggle.setAttribute('aria-expanded', 'false');
+    keyContext.controls?.classList.remove('is-open');
+    keyContext.toggle.classList.remove('is-active');
+  }
+
+  const handleMapContainerClick = () => {
+    closeKeyPanel();
+  };
+  mapContainer.addEventListener('click', handleMapContainerClick);
 
   searchInput.addEventListener('keydown', (event) => {
     if (event.key === 'ArrowDown') {
@@ -364,6 +506,7 @@ export function displayMap(data, options = {}) {
     if (status === '@HOLD') return '#ffeb3b';
     if (status === '@DANGER') return '#ff0000';
     if (status === '@HOME') return '#00ff00';
+    if (status === '@SCAN') return '#008080';
     return '#d3d3d3';
   };
 
@@ -836,8 +979,10 @@ export function displayMap(data, options = {}) {
     nodes,
     currentTransform,
     settleTimer: null,
-    physicsEnabled: desiredPhysicsEnabled
+    physicsEnabled: desiredPhysicsEnabled,
+    keyPanelCloseListener: null
   };
+  runtimeState.keyPanelCloseListener = handleMapContainerClick;
 
   const syncPhysicsSimulation = () => {
     const sim = runtimeState.simulation;
