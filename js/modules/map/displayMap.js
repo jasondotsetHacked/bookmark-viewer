@@ -2676,6 +2676,7 @@ export function displayMap(data, options = {}) {
       runtimeState.nodes = nodes;
       simulation.nodes(nodes);
       simulation.alpha(0.9).restart();
+      syncPhysicsSimulation();
     }
 
     routeOverlayStateData = {
@@ -2728,7 +2729,14 @@ export function displayMap(data, options = {}) {
             return;
           }
           event.sourceEvent?.stopPropagation();
-          dragEnded(event, d, simulation);
+          if (!runtimeState.physicsEnabled) {
+            d.fx = d.x;
+            d.fy = d.y;
+          } else {
+            d.fx = null;
+            d.fy = null;
+          }
+          if (!event.active) simulation.alphaTarget(0);
           updateRouteOverlayPositions();
         }));
 
