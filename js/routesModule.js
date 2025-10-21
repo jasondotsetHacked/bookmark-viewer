@@ -13,6 +13,7 @@ if (moduleRoot) {
 async function initializeRoutesModule() {
   const addInput = moduleRoot.querySelector('#routesAddInput');
   const addButton = moduleRoot.querySelector('#routesAddButton');
+  const suggestionsList = moduleRoot.querySelector('#routesSuggestions');
   const messageNode = moduleRoot.querySelector('#routesMessage');
   const listNode = moduleRoot.querySelector('#routesList');
   const emptyNode = moduleRoot.querySelector('#routesEmpty');
@@ -30,11 +31,283 @@ async function initializeRoutesModule() {
     });
   }
 
+  // Fuzzy search functions
+  function computeFuzzyScore(candidate, query) {
+    if (!candidate) {
+      return Number.NEGATIVE_INFINITY;
+    }
+    if (candidate === query) {
+      return 100;
+    }
+    let score = 0;
+    if (candidate.startsWith(query)) {
+      score += 60;
+    }
+    const index = candidate.indexOf(query);
+    if (index >= 0) {
+      score += 40 - (index * 1.5);
+    }
+    const distance = levenshteinDistance(query, candidate);
+    const maxLen = Math.max(candidate.length, query.length) || 1;
+    const similarity = 1 - (distance / maxLen);
+    score += similarity * 35;
+    score += sequentialMatchBonus(candidate, query);
+    return score;
+  }
+
+  function sequentialMatchBonus(candidate, query) {
+    if (!candidate || !query) {
+      return 0;
+    }
+    let score = 0;
+    let lastIndex = -1;
+    for (let i = 0; i < query.length; i += 1) {
+      const char = query[i];
+      const nextIndex = candidate.indexOf(char, lastIndex + 1);
+      if (nextIndex === -1) {
+        score -= 3;
+        continue;
+      }
+      score += 4;
+      if (nextIndex === lastIndex + 1) {
+        score += 2;
+      }
+      lastIndex = nextIndex;
+    }
+    return score;
+  }
+
+  function levenshteinDistance(a, b) {
+    if (a === b) {
+      return 0;
+    }
+    const lenA = a.length;
+    const lenB = b.length;
+    if (lenA === 0) {
+      return lenB;
+    }
+    if (lenB === 0) {
+      return lenA;
+    }
+    const previous = new Array(lenB + 1);
+    const current = new Array(lenB + 1);
+    for (let j = 0; j <= lenB; j += 1) {
+      previous[j] = j;
+    }
+    for (let i = 1; i <= lenA; i += 1) {
+      current[0] = i;
+      const charA = a.charCodeAt(i - 1);
+      for (let j = 1; j <= lenB; j += 1) {
+        const charB = b.charCodeAt(j - 1);
+        const cost = charA === charB ? 0 : 1;
+        current[j] = Math.min(
+          previous[j] + 1,
+          current[j - 1] + 1,
+          previous[j - 1] + cost
+        );
+      }
+      for (let j = 0; j <= lenB; j += 1) {
+        previous[j] = current[j];
+      }
+    }
+    return previous[lenB];
+  }
+
+  // Suggestion management functions
+  function clearSuggestions() {
+    highlightedSuggestionIndex = -1;
+    suggestionEntries = [];
+    if (suggestionsList) {
+      suggestionsList.innerHTML = '';
+    }
+  }
+
+  function hideSuggestions() {
+    if (!suggestionsList) {
+      return;
+    }
+    suggestionsList.hidden = true;
+  }
+
+  function showSuggestions() {
+    if (!suggestionsList || !suggestionEntries.length) {
+      return;
+    }
+    suggestionsList.hidden = false;
+  }
+
+  function highlightSuggestion(index) {
+    if (!suggestionsList) {
+      return;
+    }
+    const items = suggestionsList.querySelectorAll('.routes-suggestion');
+    items.forEach((item) => item.classList.remove('is-active'));
+    highlightedSuggestionIndex = index;
+    if (index >= 0 && index < items.length) {
+      const activeItem = items[index];
+      activeItem.classList.add('is-active');
+      activeItem.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function moveSuggestionHighlight(delta) {
+    if (!suggestionEntries.length) {
+      return;
+    }
+    let nextIndex;
+    if (highlightedSuggestionIndex < 0) {
+      nextIndex = delta > 0 ? 0 : suggestionEntries.length - 1;
+    } else {
+      nextIndex = highlightedSuggestionIndex + delta;
+      if (nextIndex < 0) {
+        nextIndex = suggestionEntries.length - 1;
+      } else if (nextIndex >= suggestionEntries.length) {
+        nextIndex = 0;
+      }
+    }
+    highlightSuggestion(nextIndex);
+  }
+
+  function applySuggestion(index) {
+    const suggestion = suggestionEntries[index];
+    if (!suggestion || !addInput) {
+      return;
+    }
+    addInput.value = suggestion.name;
+    hideSuggestions();
+    clearSuggestions();
+    addInput.focus();
+  }
+
+  function renderSuggestionList(results, query) {
+    if (!suggestionsList) {
+      return;
+    }
+    suggestionsList.innerHTML = '';
+    highlightedSuggestionIndex = -1;
+    suggestionEntries = results;
+
+    if (!results.length) {
+      hideSuggestions();
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    results.forEach((result, index) => {
+      const item = document.createElement('li');
+      item.className = 'routes-suggestion';
+      item.setAttribute('role', 'option');
+      item.setAttribute('data-index', index.toString());
+      item.innerHTML = buildSuggestionMarkup(result, query);
+      item.addEventListener('mouseenter', () => highlightSuggestion(index));
+      item.addEventListener('mouseleave', () => {
+        if (highlightedSuggestionIndex === index) {
+          highlightSuggestion(-1);
+        }
+      });
+      item.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        applySuggestion(index);
+      });
+      fragment.appendChild(item);
+    });
+    suggestionsList.appendChild(fragment);
+    showSuggestions();
+  }
+
+  function buildSuggestionMarkup(result, query) {
+    const primary = highlightMatch(result.displayLabel, query);
+    return `<span class="routes-suggestion-label">${primary}</span>`;
+  }
+
+  function highlightMatch(label, query) {
+    if (!label) {
+      return '';
+    }
+    const normalizedLabel = label.toLowerCase();
+    const normalizedQuery = query.toLowerCase();
+    const index = normalizedLabel.indexOf(normalizedQuery);
+    if (index === -1 || !query) {
+      return escapeHtml(label);
+    }
+    const before = escapeHtml(label.slice(0, index));
+    const match = escapeHtml(label.slice(index, index + query.length));
+    const after = escapeHtml(label.slice(index + query.length));
+    return `${before}<span class="routes-suggestion-highlight">${match}</span>${after}`;
+  }
+
+  function escapeHtml(value) {
+    if (value === undefined || value === null) {
+      return '';
+    }
+    return value
+      .toString()
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function updateSuggestionResults(rawQuery) {
+    if (!addInput) {
+      return;
+    }
+    const query = rawQuery.trim();
+    if (!query) {
+      clearSuggestions();
+      hideSuggestions();
+      return;
+    }
+    if (!systemsByLower.size) {
+      clearSuggestions();
+      hideSuggestions();
+      return;
+    }
+    const results = runFuzzySearch(query, MAX_SUGGESTION_RESULTS);
+    renderSuggestionList(results, query);
+  }
+
+  function runFuzzySearch(rawQuery, limit = MAX_SUGGESTION_RESULTS) {
+    const query = rawQuery.trim().toLowerCase();
+    if (!query) {
+      return [];
+    }
+    const results = [];
+    for (const [key, entry] of systemsByLower) {
+      const score = computeFuzzyScore(key, query);
+      if (score >= 5) { // Minimum score to consider a match
+        results.push({
+          name: entry.name,
+          displayLabel: entry.name,
+          score: score
+        });
+      }
+    }
+
+    results.sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+    if (limit > 0) {
+      return results.slice(0, limit);
+    }
+    return results;
+  }
+
   let pinnedSystems = loadPinned();
   pinnedSystems.sort((a, b) => a.localeCompare(b));
   const distanceLabels = new Map();
   let currentOrigin = window.__bookmarkViewerSelectedSystem || null;
   let distanceToken = 0;
+
+  // Suggestions state
+  const MAX_SUGGESTION_RESULTS = 8;
+  let suggestionEntries = [];
+  let highlightedSuggestionIndex = -1;
 
   renderPinnedList();
   refreshEmptyState();
@@ -48,7 +321,57 @@ async function initializeRoutesModule() {
   addInput?.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault();
-      handleAdd();
+      if (highlightedSuggestionIndex >= 0) {
+        applySuggestion(highlightedSuggestionIndex);
+      } else {
+        handleAdd();
+      }
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      moveSuggestionHighlight(1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveSuggestionHighlight(-1);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      if (highlightedSuggestionIndex >= 0) {
+        clearSuggestions();
+        hideSuggestions();
+      } else {
+        addInput.blur();
+      }
+    }
+  });
+
+  addInput?.addEventListener('input', (event) => {
+    updateSuggestionResults(event.target.value || '');
+  });
+
+  addInput?.addEventListener('focus', () => {
+    if (suggestionEntries.length) {
+      showSuggestions();
+    }
+  });
+
+  addInput?.addEventListener('blur', (event) => {
+    // Delay hiding to allow clicks on suggestions
+    setTimeout(() => {
+      hideSuggestions();
+    }, 150);
+  });
+
+  suggestionsList?.addEventListener('mousedown', (event) => {
+    event.preventDefault();
+  });
+
+  suggestionsList?.addEventListener('click', (event) => {
+    const item = event.target.closest('.routes-suggestion');
+    if (!item) {
+      return;
+    }
+    const index = parseInt(item.getAttribute('data-index'), 10);
+    if (!isNaN(index)) {
+      applySuggestion(index);
     }
   });
 
@@ -113,13 +436,39 @@ async function initializeRoutesModule() {
     if (!trimmed) {
       return null;
     }
-    const lookup = systemsByLower.get(trimmed.toLowerCase());
-    if (lookup) {
+    const lowerTrimmed = trimmed.toLowerCase();
+
+    // First try exact match
+    const exactLookup = systemsByLower.get(lowerTrimmed);
+    if (exactLookup) {
       return {
-        name: lookup.name,
+        name: exactLookup.name,
         isKnown: true
       };
     }
+
+    // If no exact match, try fuzzy search
+    const query = lowerTrimmed;
+    let bestMatch = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    const minFuzzyScore = 5; // Minimum score to consider a match
+
+    for (const [key, entry] of systemsByLower) {
+      const score = computeFuzzyScore(key, query);
+      if (score > bestScore && score >= minFuzzyScore) {
+        bestScore = score;
+        bestMatch = entry;
+      }
+    }
+
+    if (bestMatch) {
+      return {
+        name: bestMatch.name,
+        isKnown: true
+      };
+    }
+
+    // No match found
     return {
       name: trimmed,
       isKnown: false
@@ -139,12 +488,16 @@ async function initializeRoutesModule() {
     if (pinnedSystems.some((entry) => entry.toLowerCase() === name.toLowerCase())) {
       setRoutesMessage(`${name} is already pinned.`, 'error');
       addInput.value = '';
+      clearSuggestions();
+      hideSuggestions();
       return;
     }
     pinnedSystems.push(name);
     pinnedSystems.sort((a, b) => a.localeCompare(b));
     savePinned();
     addInput.value = '';
+    clearSuggestions();
+    hideSuggestions();
     setRoutesMessage(`Pinned ${name}.`, 'info');
     renderPinnedList();
     refreshEmptyState();
