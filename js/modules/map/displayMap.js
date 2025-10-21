@@ -2,6 +2,7 @@ import { extractSystems } from './extractSystems.js';
 import { buildSystemTag } from './buildSystemTag.js';
 import { lockNodes, unlockNodes, dragStarted, dragged, dragEnded } from './dragHandlers.js';
 import { getRowExpiry, clearCountdowns, TIMER_TAGS } from '../../bookmarkTimers.js';
+import { updateRouteGraph, planRoute, getRouteSuggestions, warmRoutePlanner } from './routePlanner.js';
 
 const PLACEHOLDER_PATTERN = /^\?+$/;
 const PLACEHOLDER_KEY_COLUMNS = ['Label', 'Type', 'SOL', 'CON', 'REG', 'Date', 'Expiry', 'Creator', 'Jumps'];
@@ -228,6 +229,93 @@ export function displayMap(data, options = {}) {
   searchControls.append(searchToggle, searchPanel);
   controlBar.appendChild(searchControls);
 
+  const routeControls = document.createElement('div');
+  routeControls.className = 'map-route-controls';
+
+  const routeToggle = document.createElement('button');
+  routeToggle.type = 'button';
+  routeToggle.className = 'map-route-toggle';
+  routeToggle.setAttribute('aria-haspopup', 'true');
+  routeToggle.setAttribute('aria-expanded', 'false');
+  routeToggle.setAttribute('aria-label', 'Plan a hybrid route');
+  routeToggle.title = 'Plan a route';
+  routeToggle.textContent = 'Route';
+
+  const routePanel = document.createElement('div');
+  routePanel.className = 'map-route-panel';
+  routePanel.hidden = true;
+
+  const routeOriginRow = document.createElement('div');
+  routeOriginRow.className = 'map-route-origin';
+  const routeOriginLabel = document.createElement('span');
+  routeOriginLabel.className = 'map-route-origin-label';
+  routeOriginLabel.textContent = 'Origin';
+  const routeOriginValue = document.createElement('span');
+  routeOriginValue.className = 'map-route-origin-value';
+  routeOriginValue.textContent = 'Select a system';
+  routeOriginRow.append(routeOriginLabel, routeOriginValue);
+
+  const routeDestinationContainer = document.createElement('div');
+  routeDestinationContainer.className = 'map-route-destination';
+
+  const routeInput = document.createElement('input');
+  routeInput.type = 'text';
+  routeInput.className = 'map-route-input';
+  routeInput.placeholder = 'Enter destination system...';
+  routeInput.setAttribute('aria-label', 'Destination system');
+  routeInput.autocomplete = 'off';
+  routeInput.setAttribute('role', 'combobox');
+  routeInput.setAttribute('aria-expanded', 'false');
+
+  const routeSuggestionList = document.createElement('ul');
+  routeSuggestionList.className = 'map-route-suggestions';
+  routeSuggestionList.hidden = true;
+  routeSuggestionList.setAttribute('role', 'listbox');
+
+  const routeSuggestionId = `map-route-suggestions-${Date.now().toString(36)}-${Math.floor(Math.random() * 1000)}`;
+  routeSuggestionList.id = routeSuggestionId;
+  routeInput.setAttribute('aria-controls', routeSuggestionId);
+
+  routeDestinationContainer.append(routeInput, routeSuggestionList);
+
+  const routeOptionsRow = document.createElement('div');
+  routeOptionsRow.className = 'map-route-options';
+
+  const routePreferenceLabel = document.createElement('label');
+  routePreferenceLabel.className = 'map-route-preference-label';
+  routePreferenceLabel.textContent = 'Preference';
+  routePreferenceLabel.setAttribute('for', `map-route-preference-${routeSuggestionId}`);
+
+  const routePreference = document.createElement('select');
+  routePreference.className = 'map-route-preference';
+  routePreference.id = `map-route-preference-${routeSuggestionId}`;
+  routePreference.setAttribute('aria-label', 'Route preference');
+  ['Shorter', 'Safer', 'LessSecure'].forEach((value) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = value === 'LessSecure' ? 'Less Secure' : value;
+    routePreference.appendChild(option);
+  });
+
+  const routeSubmit = document.createElement('button');
+  routeSubmit.type = 'button';
+  routeSubmit.className = 'map-route-submit';
+  routeSubmit.textContent = 'Plan';
+
+  routeOptionsRow.append(routePreferenceLabel, routePreference, routeSubmit);
+
+  const routeMessage = document.createElement('div');
+  routeMessage.className = 'map-route-message';
+  routeMessage.setAttribute('role', 'status');
+  routeMessage.setAttribute('aria-live', 'polite');
+
+  const routeSummary = document.createElement('div');
+  routeSummary.className = 'map-route-summary';
+
+  routePanel.append(routeOriginRow, routeDestinationContainer, routeOptionsRow, routeMessage, routeSummary);
+  routeControls.append(routeToggle, routePanel);
+  controlBar.appendChild(routeControls);
+
   const keyControls = document.createElement('div');
   keyControls.className = 'map-key-controls';
 
@@ -370,6 +458,374 @@ export function displayMap(data, options = {}) {
     message: searchMessage
   };
 
+  const routeContext = {
+    controls: routeControls,
+    toggle: routeToggle,
+    panel: routePanel,
+    originValue: routeOriginValue,
+    input: routeInput,
+    suggestions: routeSuggestionList,
+    preference: routePreference,
+    submit: routeSubmit,
+    message: routeMessage,
+    summary: routeSummary
+  };
+
+  let applyRouteHighlight = () => {};
+  let clearRouteHighlight = () => {};
+  let renderRouteOverlay = () => {};
+  let clearRouteOverlay = () => {};
+  let updateRouteOverlayPositions = () => {};
+  let currentRoutePlan = null;
+  let routeSuggestionToken = 0;
+  const isRouteLocked = () => Boolean(currentRoutePlan && currentRoutePlan.status === 'ok');
+  const getRouteOrigin = () => (currentRoutePlan && currentRoutePlan.origin) || null;
+
+  const hideRouteSuggestions = () => {
+    if (!routeContext.suggestions) {
+      return;
+    }
+    routeContext.suggestions.hidden = true;
+    routeContext.suggestions.innerHTML = '';
+    routeContext.input?.setAttribute('aria-expanded', 'false');
+  };
+
+  const setRouteMessage = (text = '', tone = 'info') => {
+    if (!routeContext.message) {
+      return;
+    }
+    routeContext.message.textContent = text;
+    routeContext.message.classList.toggle('map-route-message-error', tone === 'error');
+  };
+
+  const clearRouteSummary = () => {
+    if (routeContext.summary) {
+      routeContext.summary.innerHTML = '';
+    }
+    currentRoutePlan = null;
+    clearRouteOverlay();
+    clearRouteHighlight();
+  };
+
+  const formatSecurityLabel = (securityStatus) => {
+    if (typeof securityStatus !== 'number') {
+      return '';
+    }
+    if (securityStatus >= 0.5) {
+      return 'HS';
+    }
+    if (securityStatus >= 0.1) {
+      return 'LS';
+    }
+    return 'NS';
+  };
+
+  const renderRouteSummary = (plan) => {
+    if (!routeContext.summary) {
+      return;
+    }
+    routeContext.summary.innerHTML = '';
+    const heading = document.createElement('p');
+    heading.className = 'map-route-summary-heading';
+    heading.textContent = `${plan.origin} -> ${plan.destination}`;
+    routeContext.summary.appendChild(heading);
+
+    if (Array.isArray(plan.jSpacePath) && plan.jSpacePath.length > 1) {
+      const wormholeLine = document.createElement('p');
+      wormholeLine.className = 'map-route-summary-line';
+      wormholeLine.textContent = `Wormhole path (${plan.totalJumps.wormhole} jumps): ${plan.jSpacePath.join(' -> ')}`;
+      routeContext.summary.appendChild(wormholeLine);
+    }
+
+    if (plan.mode === 'hybrid' && plan.kSpace) {
+      const exitLine = document.createElement('p');
+      exitLine.className = 'map-route-summary-line';
+      exitLine.textContent = `Exit to K-space: ${plan.exitSystem}`;
+      routeContext.summary.appendChild(exitLine);
+    }
+
+    if (plan.kSpace && Array.isArray(plan.kSpace.systems) && plan.kSpace.systems.length > 1) {
+      const kspaceLine = document.createElement('p');
+      kspaceLine.className = 'map-route-summary-line';
+      kspaceLine.textContent = `K-space route (${plan.kSpace.jumpCount} jumps): ${plan.kSpace.systems.join(' -> ')}`;
+      routeContext.summary.appendChild(kspaceLine);
+    }
+
+    if (plan.totalJumps) {
+      const totalsLine = document.createElement('p');
+      totalsLine.className = 'map-route-summary-line map-route-summary-total';
+      totalsLine.textContent = `Total jumps: ${plan.totalJumps.total} (${plan.totalJumps.wormhole} wormhole, ${plan.totalJumps.kspace} K-space)`;
+      routeContext.summary.appendChild(totalsLine);
+    }
+  };
+
+  const applyRoutePlan = (plan) => {
+    currentRoutePlan = plan;
+    if (plan && plan.origin) {
+      applySystemSelection(plan.origin, { force: true });
+    }
+    renderRouteSummary(plan);
+    setRouteMessage(plan.message || 'Route ready.');
+    if (Array.isArray(plan.jSpacePath) && plan.jSpacePath.length > 0) {
+      applyRouteHighlight(plan.jSpacePath);
+    } else {
+      clearRouteHighlight();
+    }
+    if (plan.mode === 'hybrid' || plan.mode === 'kspace') {
+      renderRouteOverlay(plan);
+    } else {
+      clearRouteOverlay();
+    }
+  };
+
+  const updateRouteAvailability = () => {
+    const selected = window.__bookmarkViewerSelectedSystem || null;
+    const hasOrigin = Boolean(selected);
+    if (routeContext.toggle) {
+      routeContext.toggle.disabled = !hasOrigin;
+      routeContext.toggle.classList.toggle('is-disabled', !hasOrigin);
+    }
+    if (routeContext.controls) {
+      routeContext.controls.classList.toggle('is-disabled', !hasOrigin);
+    }
+    if (routeContext.originValue) {
+      routeContext.originValue.textContent = hasOrigin ? selected : 'Select a system';
+    }
+    if (!hasOrigin) {
+      hideRouteSuggestions();
+      setRouteMessage('Select a system to set your origin.', 'info');
+      clearRouteSummary();
+      closeRoutePanel();
+    } else if (!currentRoutePlan && routeContext.panel && !routeContext.panel.hidden) {
+      setRouteMessage('Enter a destination to plan a route.', 'info');
+    }
+  };
+
+  const openRoutePanel = () => {
+    if (!routeContext.panel || !routeContext.toggle || routeContext.toggle.disabled) {
+      return;
+    }
+    if (!routeContext.panel.hidden) {
+      return;
+    }
+    routeContext.panel.hidden = false;
+    routeContext.toggle.setAttribute('aria-expanded', 'true');
+    routeContext.controls?.classList.add('is-open');
+    routeContext.toggle.classList.add('is-active');
+    if (routeContext.input) {
+      requestAnimationFrame(() => {
+        routeContext.input.focus();
+        routeContext.input.select();
+      });
+    }
+  };
+
+  const closeRoutePanel = () => {
+    if (!routeContext.panel || !routeContext.toggle) {
+      return;
+    }
+    if (routeContext.panel.hidden) {
+      return;
+    }
+    routeContext.panel.hidden = true;
+    routeContext.toggle.setAttribute('aria-expanded', 'false');
+    routeContext.controls?.classList.remove('is-open');
+    routeContext.toggle.classList.remove('is-active');
+    hideRouteSuggestions();
+  };
+
+  const toggleRoutePanel = () => {
+    if (!routeContext.panel) {
+      return;
+    }
+    if (routeContext.panel.hidden) {
+      openRoutePanel();
+    } else {
+      closeRoutePanel();
+    }
+  };
+
+  const renderRouteSuggestions = (entries) => {
+    if (!routeContext.suggestions) {
+      return;
+    }
+    routeContext.suggestions.innerHTML = '';
+    if (!entries || !entries.length) {
+      hideRouteSuggestions();
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    entries.forEach((entry, index) => {
+      const item = document.createElement('li');
+      item.className = 'map-route-suggestion';
+      item.setAttribute('role', 'option');
+      item.setAttribute('data-value', entry.name);
+      item.id = `${routeSuggestionId}-item-${index}`;
+
+      const label = document.createElement('span');
+      label.className = 'map-route-suggestion-label';
+      label.textContent = entry.name;
+      item.appendChild(label);
+
+      const metaParts = [];
+      if (entry.wormholeClass) {
+        metaParts.push(entry.wormholeClass.toUpperCase());
+      } else if (typeof entry.securityStatus === 'number') {
+        metaParts.push(formatSecurityLabel(entry.securityStatus));
+      }
+      if (entry.isOnMap) {
+        metaParts.push('On map');
+      }
+      if (metaParts.length) {
+        const meta = document.createElement('span');
+        meta.className = 'map-route-suggestion-meta';
+        meta.textContent = metaParts.join(' | ');
+        item.appendChild(meta);
+      }
+
+      fragment.appendChild(item);
+    });
+
+    routeContext.suggestions.appendChild(fragment);
+    routeContext.suggestions.hidden = false;
+    routeContext.input?.setAttribute('aria-expanded', 'true');
+  };
+
+  const refreshRouteSuggestions = (query) => {
+    const value = query ? query.trim() : '';
+    if (!value || value.length < 2) {
+      hideRouteSuggestions();
+      return;
+    }
+    const token = ++routeSuggestionToken;
+    getRouteSuggestions(value, 12)
+      .then((results) => {
+        if (token !== routeSuggestionToken) {
+          return;
+        }
+        renderRouteSuggestions(results);
+      })
+      .catch((error) => {
+        console.warn('displayMap: failed to load route suggestions', error);
+        if (token === routeSuggestionToken) {
+          hideRouteSuggestions();
+        }
+      });
+  };
+
+  const executeRoutePlanning = async (rawDestination, options = {}) => {
+    const origin = window.__bookmarkViewerSelectedSystem || null;
+    if (!origin) {
+      setRouteMessage('Select an origin system first.', 'error');
+      return null;
+    }
+    const destinationValue = rawDestination ? rawDestination.toString().trim() : '';
+    if (!destinationValue) {
+      setRouteMessage('Enter a destination system.', 'error');
+      return null;
+    }
+
+    if (options.showPanel !== false) {
+      openRoutePanel();
+    }
+
+    if (options.preference && routeContext.preference && routeContext.preference.value !== options.preference) {
+      routeContext.preference.value = options.preference;
+    }
+
+    setRouteMessage('Calculating route...', 'info');
+    routeContext.submit?.setAttribute('disabled', 'true');
+    try {
+      const plan = await planRoute({
+        origin,
+        destination: destinationValue,
+        preference: options.preference || (routeContext.preference ? routeContext.preference.value : undefined)
+      });
+      if (plan && plan.status === 'ok') {
+        if (routeContext.input && options.updateInput !== false) {
+          routeContext.input.value = destinationValue;
+        }
+        applyRoutePlan(plan);
+        return plan;
+      }
+      clearRouteSummary();
+      setRouteMessage(plan?.message || 'No route could be created.', 'error');
+      return plan || null;
+    } catch (error) {
+      console.error('displayMap: unexpected error while planning route', error);
+      clearRouteSummary();
+      setRouteMessage('An unexpected error occurred while planning the route.', 'error');
+      return null;
+    } finally {
+      routeContext.submit?.removeAttribute('disabled');
+      hideRouteSuggestions();
+    }
+  };
+
+  const handleRouteSubmit = async () => {
+    const preferenceValue = routeContext.preference ? routeContext.preference.value : undefined;
+    await executeRoutePlanning(routeContext.input ? routeContext.input.value : '', {
+      preference: preferenceValue,
+      showPanel: false
+    });
+  };
+
+  routeToggle.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (routeToggle.disabled) {
+      setRouteMessage('Select a system on the map to set your origin.', 'error');
+      return;
+    }
+    closeSearchPanel();
+    closeKeyPanel();
+    toggleRoutePanel();
+  });
+
+  routePanel.addEventListener('click', (event) => event.stopPropagation());
+
+  routeSubmit.addEventListener('click', (event) => {
+    event.stopPropagation();
+    handleRouteSubmit();
+  });
+
+  routeInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      handleRouteSubmit();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      hideRouteSuggestions();
+    }
+  });
+
+  routeInput.addEventListener('input', (event) => {
+    refreshRouteSuggestions(event.target.value || '');
+  });
+
+  routeSuggestionList.addEventListener('mousedown', (event) => {
+    event.preventDefault();
+  });
+
+  routeSuggestionList.addEventListener('click', (event) => {
+    const item = event.target.closest('.map-route-suggestion');
+    if (!item) {
+      return;
+    }
+    const value = item.getAttribute('data-value');
+    if (value && routeContext.input) {
+      routeContext.input.value = value;
+    }
+    hideRouteSuggestions();
+    routeContext.input?.focus();
+  });
+
+  warmRoutePlanner().catch((error) => {
+    console.warn('displayMap: failed to warm route planner', error);
+  });
+
+  updateRouteAvailability();
+
   const keyContext = {
     controls: keyControls,
     toggle: keyToggle,
@@ -390,6 +846,7 @@ export function displayMap(data, options = {}) {
   searchToggle.addEventListener('click', (event) => {
     event.stopPropagation();
     closeKeyPanel();
+    closeRoutePanel();
     toggleSearchPanel();
   });
 
@@ -404,6 +861,7 @@ export function displayMap(data, options = {}) {
     event.stopPropagation();
     if (keyPanel.hidden) {
       closeSearchPanel();
+      closeRoutePanel();
       openKeyPanel();
     } else {
       closeKeyPanel();
@@ -440,6 +898,7 @@ export function displayMap(data, options = {}) {
 
   const handleMapContainerClick = () => {
     closeKeyPanel();
+    closeRoutePanel();
   };
   mapContainer.addEventListener('click', handleMapContainerClick);
 
@@ -518,6 +977,7 @@ export function displayMap(data, options = {}) {
       window.setSystemIntelActiveSystem(null);
     }
     window.__bookmarkViewerSelectedSystem = null;
+    updateRouteAvailability();
   }
 
   const classColors = {
@@ -829,6 +1289,17 @@ export function displayMap(data, options = {}) {
   const links = connections.filter((connection) => (
     connectedSystemNames.has(connection.source) && connectedSystemNames.has(connection.target)
   ));
+  const existingConnectionKeys = new Set(links.map((connection) => {
+    const sourceName = typeof connection.source === 'string'
+      ? connection.source
+      : (connection.source && connection.source.name) || '';
+    const targetName = typeof connection.target === 'string'
+      ? connection.target
+      : (connection.target && connection.target.name) || '';
+    return buildConnectionKey(sourceName, targetName);
+  }));
+
+  updateRouteGraph({ nodes, links, systemRecords: systems });
 
   suggestionDataset = buildSearchIndex(nodes);
   exactMatchIndex = buildExactMatchIndex(suggestionDataset);
@@ -840,6 +1311,18 @@ export function displayMap(data, options = {}) {
   console.log('statuses:', statuses);
   const hasPreviousLayout = previousPositions.size > 0;
   const nodesByName = new Map(nodes.map((node) => [node.name, node]));
+  const nodesByLowerName = new Map();
+  nodes.forEach((node) => {
+    const keys = [node.name, node.displayName, node.filterKey, node.originSystem]
+      .filter(Boolean)
+      .map((value) => value.toString().trim().toLowerCase());
+    keys.forEach((key) => {
+      if (!key || nodesByLowerName.has(key)) {
+        return;
+      }
+      nodesByLowerName.set(key, node);
+    });
+  });
   const adjacency = new Map();
 
   const addNeighbor = (from, to) => {
@@ -1495,7 +1978,10 @@ export function displayMap(data, options = {}) {
     }) || null;
   }
 
-  function applySystemSelection(target) {
+  function applySystemSelection(target, options = {}) {
+    const settings = (options && typeof options === 'object') ? options : {};
+    const force = Boolean(settings.force);
+
     if (!target) {
       return false;
     }
@@ -1508,13 +1994,30 @@ export function displayMap(data, options = {}) {
       return false;
     }
 
+    const selectionKey = targetNode.filterKey || targetNode.name;
+    if (!force && isRouteLocked()) {
+      const originKey = normalizeSystemKey(getRouteOrigin());
+      const targetKey = normalizeSystemKey(selectionKey);
+      if (originKey && targetKey && originKey !== targetKey) {
+        return false;
+      }
+    }
+
     resetNodeStyles();
     updateCrosshair(targetNode, classColors);
 
-    const selectionKey = targetNode.filterKey || targetNode.name;
     const keys = ['Label', 'Type', 'Jumps', 'SOL', 'CON', 'REG', 'Date', 'Expiry', 'Creator'];
     displayTable(keys, data, selectionKey);
+    const previousOrigin = currentRoutePlan ? normalizeSystemKey(currentRoutePlan.origin) : null;
+    const normalizedSelection = normalizeSystemKey(selectionKey);
+    if (previousOrigin && normalizedSelection && previousOrigin !== normalizedSelection) {
+      clearRouteSummary();
+    }
     window.__bookmarkViewerSelectedSystem = selectionKey;
+    updateRouteAvailability();
+    window.dispatchEvent(new CustomEvent('mapSelectedSystemChanged', {
+      detail: selectionKey
+    }));
     syncPhysicsSimulation();
 
     if (typeof window.setSignatureActiveSystem === 'function') {
@@ -1534,6 +2037,7 @@ export function displayMap(data, options = {}) {
   }
 
   window.__bookmarkViewerApplySystemSelection = applySystemSelection;
+  window.__bookmarkViewerRequestRoute = (destination, options = {}) => executeRoutePlanning(destination, options);
 
   function focusOnSystem(targetNode) {
     if (!targetNode) {
@@ -1765,12 +2269,15 @@ export function displayMap(data, options = {}) {
     .enter().append('line')
     .attr('stroke-width', 5)
     .attr('stroke', (d) => {
-      if (d.isVEOL && d.isCRIT) return 'url(#gradient-veol-crit)';
-      if (d.isVEOL) return '#FF0000'; // Red for VEOL
-      if (d.isEOL && d.isCRIT) return 'url(#gradient-eol-crit)';
-      if (d.isEOL) return '#800080'; // Purple for EOL
-      if (d.isCRIT) return '#FFA500'; // Orange for CRIT
-      return '#00ff00'; // Green otherwise
+      let strokeValue;
+      if (d.isVEOL && d.isCRIT) strokeValue = 'url(#gradient-veol-crit)';
+      else if (d.isVEOL) strokeValue = '#FF0000'; // Red for VEOL
+      else if (d.isEOL && d.isCRIT) strokeValue = 'url(#gradient-eol-crit)';
+      else if (d.isEOL) strokeValue = '#800080'; // Purple for EOL
+      else if (d.isCRIT) strokeValue = '#FFA500'; // Orange for CRIT
+      else strokeValue = '#00ff00'; // Green otherwise
+      d.__baseStroke = strokeValue;
+      return strokeValue;
     });
 
   const svgDefs = svg.append('defs');
@@ -1800,6 +2307,28 @@ export function displayMap(data, options = {}) {
     .attr('offset', '100%')
     .attr('stop-color', '#FFA500'); // Orange
 
+  const beginRouteLockedDrag = (event, node) => {
+    if (!event.active) {
+      simulation.alphaTarget(0.3).restart();
+    }
+    node.fx = node.x;
+    node.fy = node.y;
+  };
+
+  const continueRouteLockedDrag = (event, node) => {
+    node.fx = event.x;
+    node.fy = event.y;
+    const originName = getRouteOrigin();
+    if (!originName) {
+      return;
+    }
+    const normalizedOrigin = normalizeSystemKey(originName);
+    const nodeKey = normalizeSystemKey(node.filterKey || node.name);
+    if (normalizedOrigin && nodeKey && normalizedOrigin === nodeKey) {
+      updateCrosshair(node, classColors);
+    }
+  };
+
   const node = g.append('g')
     .attr('class', 'nodes')
     .selectAll('circle')
@@ -1812,19 +2341,30 @@ export function displayMap(data, options = {}) {
     .call(d3.drag()
       .on('start', (event, d) => {
         if (event.sourceEvent.button === 0) { // Left-click for dragging nodes
-          dragStarted(event, d, simulation);
+          if (isRouteLocked()) {
+            beginRouteLockedDrag(event, d);
+          } else {
+            applySystemSelection(d);
+            dragStarted(event, d, simulation);
+          }
         }
       })
       .on('drag', (event, d) => {
         if (event.sourceEvent.button === 0) { // Left-click for dragging nodes
-          dragged(event, d);
-          updateCrosshair(d, classColors);
+          if (isRouteLocked()) {
+            continueRouteLockedDrag(event, d);
+          } else {
+            dragged(event, d);
+            updateCrosshair(d, classColors);
+          }
+          updateRouteOverlayPositions();
         }
       })
       .on('end', (event, d) => {
         if (event.sourceEvent.button === 0) { // Left-click for dragging nodes
           dragEnded(event, d, simulation);
           syncPhysicsSimulation(); // Reapply physics state after dragging ends
+          updateRouteOverlayPositions();
         }
       }))
     .on('click', (event, d) => {
@@ -1832,6 +2372,90 @@ export function displayMap(data, options = {}) {
         applySystemSelection(d);
       }
     });
+
+  clearRouteHighlight = () => {
+    node.each(function (d) {
+      const selection = d3.select(this);
+      const baseColor = getStatusColor(d);
+      selection
+        .classed('is-route', false)
+        .attr('stroke-width', 1.5)
+        .attr('stroke', baseColor)
+        .attr('fill', baseColor);
+    });
+
+    link.each(function (d) {
+      const selection = d3.select(this);
+      const baseStroke = d.__baseStroke || '#00ff00';
+      selection
+        .classed('is-route', false)
+        .attr('stroke-width', 5)
+        .attr('stroke', baseStroke);
+    });
+  };
+
+  applyRouteHighlight = (pathNodes) => {
+    if (!Array.isArray(pathNodes) || !pathNodes.length) {
+      clearRouteHighlight();
+      return;
+    }
+    const normalizedNodes = new Set(pathNodes.map((name) => name.toString().trim().toLowerCase()).filter(Boolean));
+    const routeEdges = new Set();
+    for (let index = 0; index < pathNodes.length - 1; index += 1) {
+      const first = pathNodes[index];
+      const second = pathNodes[index + 1];
+      if (first && second) {
+        routeEdges.add(buildConnectionKey(first, second));
+      }
+    }
+
+    node.each(function (d) {
+      const selection = d3.select(this);
+      const candidates = [d.name, d.filterKey, d.originSystem]
+        .filter(Boolean)
+        .map((value) => value.toString().trim().toLowerCase());
+      const onRoute = candidates.some((candidate) => normalizedNodes.has(candidate));
+      if (onRoute) {
+        selection
+          .classed('is-route', true)
+          .attr('stroke-width', 3)
+          .attr('stroke', '#00e0ff')
+          .attr('fill', '#001a26');
+      } else {
+        const baseColor = getStatusColor(d);
+        selection
+          .classed('is-route', false)
+          .attr('stroke-width', 1.5)
+          .attr('stroke', baseColor)
+          .attr('fill', baseColor);
+      }
+    });
+
+    link.each(function (d) {
+      const selection = d3.select(this);
+      const sourceName = typeof d.source === 'string' ? d.source : d.source?.name;
+      const targetName = typeof d.target === 'string' ? d.target : d.target?.name;
+      if (!sourceName || !targetName) {
+        selection
+          .classed('is-route', false)
+          .attr('stroke-width', 5)
+          .attr('stroke', d.__baseStroke || '#00ff00');
+        return;
+      }
+      const key = buildConnectionKey(sourceName, targetName);
+      if (routeEdges.has(key)) {
+        selection
+          .classed('is-route', true)
+          .attr('stroke-width', 6)
+          .attr('stroke', '#00e0ff');
+      } else {
+        selection
+          .classed('is-route', false)
+          .attr('stroke-width', 5)
+          .attr('stroke', d.__baseStroke || '#00ff00');
+      }
+    });
+  };
 
   // Add event listener to reset table filter when clicking off the table
   d3.select('#mapContainer').on('click', function (event) {
@@ -1848,9 +2472,15 @@ export function displayMap(data, options = {}) {
         window.setSignatureActiveSystem(null);
       }
       if (typeof window.setSystemIntelActiveSystem === 'function') {
-        window.setSystemIntelActiveSystem(null);
-      }
-      window.__bookmarkViewerSelectedSystem = null;
+      window.setSystemIntelActiveSystem(null);
+    }
+    window.__bookmarkViewerSelectedSystem = null;
+    window.dispatchEvent(new CustomEvent('mapSelectedSystemChanged', {
+      detail: null
+    }));
+    clearRouteSummary();
+      setRouteMessage('Select a system to set your origin.', 'info');
+      updateRouteAvailability();
       closeSearchPanel();
     }
   });
@@ -1861,6 +2491,293 @@ export function displayMap(data, options = {}) {
     .data(nodes)
     .enter().append('g')
     .call(buildSystemTag);
+
+  const routeOverlayLineGroup = g.insert('g', '.nodes')
+    .attr('class', 'route-overlay-lines');
+  const routeOverlayNodeGroup = g.insert('g', '.labels')
+    .attr('class', 'route-overlay-nodes');
+  const routeOverlayLabelGroup = g.append('g')
+    .attr('class', 'route-overlay-labels');
+
+  let routeOverlayStateData = null;
+
+  clearRouteOverlay = () => {
+    let removedVirtualNodes = false;
+    if (routeOverlayStateData && Array.isArray(routeOverlayStateData.virtualNodes) && routeOverlayStateData.virtualNodes.length) {
+      routeOverlayStateData.virtualNodes.forEach((virtualNode) => {
+        const index = nodes.indexOf(virtualNode);
+        if (index >= 0) {
+          nodes.splice(index, 1);
+        }
+        if (virtualNode && virtualNode.name) {
+          const normalized = virtualNode.name.toString().trim().toLowerCase();
+          if (nodesByLowerName.get(normalized) === virtualNode) {
+            nodesByLowerName.delete(normalized);
+          }
+          if (nodesByName.get(virtualNode.name) === virtualNode) {
+            nodesByName.delete(virtualNode.name);
+          }
+        }
+      });
+      removedVirtualNodes = true;
+      runtimeState.nodes = nodes;
+    }
+    if (simulation) {
+      if (removedVirtualNodes) {
+        simulation.nodes(nodes);
+      }
+      const linkForce = simulation.force('link');
+      if (linkForce) {
+        linkForce.links(links);
+      }
+      if (removedVirtualNodes) {
+        simulation.alpha(0.55).restart();
+      }
+      runtimeState.nodes = nodes;
+    }
+    routeOverlayLineGroup.selectAll('*').remove();
+    routeOverlayNodeGroup.selectAll('*').remove();
+    routeOverlayLabelGroup.selectAll('*').remove();
+    routeOverlayStateData = null;
+    updateRouteOverlayPositions = () => {};
+  };
+
+  renderRouteOverlay = (plan) => {
+    clearRouteOverlay();
+    if (!plan) {
+      return;
+    }
+
+    const jSpaceSequence = Array.isArray(plan.jSpacePath) ? plan.jSpacePath.filter(Boolean) : [];
+    const kSpaceSequence = Array.isArray(plan.kSpace?.systems) ? plan.kSpace.systems.filter(Boolean) : [];
+    if (!jSpaceSequence.length && !kSpaceSequence.length) {
+      return;
+    }
+
+    const combinedPath = [];
+    jSpaceSequence.forEach((entry) => {
+      const cleaned = entry ? entry.toString().trim() : '';
+      if (cleaned && combinedPath[combinedPath.length - 1] !== cleaned) {
+        combinedPath.push(cleaned);
+      }
+    });
+    kSpaceSequence.forEach((entry) => {
+      const cleaned = entry ? entry.toString().trim() : '';
+      if (!cleaned) {
+        return;
+      }
+      if (combinedPath[combinedPath.length - 1] !== cleaned) {
+        combinedPath.push(cleaned);
+      }
+    });
+    if (!combinedPath.length) {
+      return;
+    }
+
+    const virtualNodes = [];
+    const virtualLinks = [];
+    const overlaySegments = [];
+    const overlayLabelNodes = [];
+    const newlyCreatedNodeMap = new Map();
+
+    const ensureNode = (name, anchorNode) => {
+      const normalized = name ? name.toString().trim().toLowerCase() : '';
+      if (!normalized) {
+        return null;
+      }
+
+      const existing = nodesByLowerName.get(normalized);
+      if (existing) {
+        return existing;
+      }
+
+      const cachedVirtual = newlyCreatedNodeMap.get(normalized);
+      if (cachedVirtual) {
+        return cachedVirtual;
+      }
+
+      const anchor = anchorNode && Number.isFinite(anchorNode.x) && Number.isFinite(anchorNode.y)
+        ? anchorNode
+        : nodes.find((nodeEntry) => Number.isFinite(nodeEntry.x) && Number.isFinite(nodeEntry.y)) || null;
+
+      const baseX = anchor ? anchor.x : (width / 2);
+      const baseY = anchor ? anchor.y : (height / 2);
+      const angle = (virtualNodes.length % 8) * ((Math.PI * 2) / 8);
+      const radius = 80 + (virtualNodes.length * 15);
+
+      const newNode = {
+        name,
+        displayName: name,
+        filterKey: name,
+        originSystem: name,
+        isRouteVirtual: true,
+        wormholeClass: null,
+        expiryInfo: { type: 'unknown', timestamp: null, rawValue: null },
+        x: baseX + Math.cos(angle) * radius,
+        y: baseY + Math.sin(angle) * radius,
+        vx: 0,
+        vy: 0
+      };
+
+      nodes.push(newNode);
+      virtualNodes.push(newNode);
+      newlyCreatedNodeMap.set(normalized, newNode);
+      nodesByLowerName.set(normalized, newNode);
+      nodesByName.set(name, newNode);
+      return newNode;
+    };
+
+    let previousNode = null;
+    combinedPath.forEach((systemName, index) => {
+      const cleaned = systemName ? systemName.toString().trim() : '';
+      if (!cleaned) {
+        return;
+      }
+      const currentNode = ensureNode(cleaned, previousNode);
+      if (!currentNode) {
+        return;
+      }
+      if (previousNode) {
+        const segmentKey = `${previousNode.name || index}-${currentNode.name || index}-${index}`;
+        overlaySegments.push({
+          source: previousNode,
+          target: currentNode,
+          key: segmentKey
+        });
+
+        const previousVirtual = Boolean(previousNode.isRouteVirtual);
+        const currentVirtual = Boolean(currentNode.isRouteVirtual);
+        if (previousVirtual || currentVirtual) {
+          const connectionKey = buildConnectionKey(previousNode.name, currentNode.name);
+          if (!existingConnectionKeys.has(connectionKey)) {
+            virtualLinks.push({
+              source: previousNode,
+              target: currentNode,
+              isRouteVirtual: true
+            });
+          }
+        }
+      }
+      if (currentNode.isRouteVirtual) {
+        overlayLabelNodes.push(currentNode);
+      }
+      previousNode = currentNode;
+    });
+
+    const linkForce = simulation.force('link');
+    if (linkForce) {
+      if (virtualLinks.length) {
+        linkForce.links(links.concat(virtualLinks));
+      } else {
+        linkForce.links(links);
+      }
+    }
+    if (virtualNodes.length) {
+      runtimeState.nodes = nodes;
+      simulation.nodes(nodes);
+      simulation.alpha(0.9).restart();
+    }
+
+    routeOverlayStateData = {
+      virtualNodes,
+      virtualLinks,
+      segments: overlaySegments,
+      labelNodes: overlayLabelNodes
+    };
+
+    routeOverlayLineGroup.selectAll('line')
+      .data(overlaySegments, (d) => d.key)
+      .join(
+        (enter) => enter.append('line').attr('class', 'route-overlay-line'),
+        (update) => update,
+        (exit) => exit.remove()
+      );
+
+    const overlayNodeSelection = routeOverlayNodeGroup.selectAll('circle')
+      .data(overlayLabelNodes, (d) => d.name)
+      .join(
+        (enter) => enter.append('circle')
+          .attr('class', 'route-overlay-node')
+          .attr('r', 8),
+        (update) => update,
+        (exit) => exit.remove()
+      );
+
+    overlayNodeSelection
+      .on('click', (event) => {
+        event.stopPropagation();
+      })
+      .call(d3.drag()
+        .on('start', (event, d) => {
+          if (event.sourceEvent && event.sourceEvent.button !== 0) {
+            return;
+          }
+          event.sourceEvent?.stopPropagation();
+          beginRouteLockedDrag(event, d);
+        })
+        .on('drag', (event, d) => {
+          if (event.sourceEvent && event.sourceEvent.button !== 0) {
+            return;
+          }
+          event.sourceEvent?.stopPropagation();
+          continueRouteLockedDrag(event, d);
+          updateRouteOverlayPositions();
+        })
+        .on('end', (event, d) => {
+          if (event.sourceEvent && event.sourceEvent.button !== 0) {
+            return;
+          }
+          event.sourceEvent?.stopPropagation();
+          dragEnded(event, d, simulation);
+          updateRouteOverlayPositions();
+        }));
+
+    routeOverlayLabelGroup.selectAll('text')
+      .data(overlayLabelNodes, (d) => d.name)
+      .join(
+        (enter) => enter.append('text')
+          .attr('class', 'route-overlay-label')
+          .attr('text-anchor', 'middle')
+          .text((d) => d.name),
+        (update) => update.text((d) => d.name),
+        (exit) => exit.remove()
+      );
+
+    updateRouteOverlayPositions = () => {
+      if (!routeOverlayStateData) {
+        return;
+      }
+      const { segments, labelNodes } = routeOverlayStateData;
+
+      routeOverlayLineGroup.selectAll('line')
+        .data(segments, (d) => d.key)
+        .attr('x1', (d) => Number.isFinite(d.source?.x) ? d.source.x : 0)
+        .attr('y1', (d) => Number.isFinite(d.source?.y) ? d.source.y : 0)
+        .attr('x2', (d) => Number.isFinite(d.target?.x) ? d.target.x : 0)
+        .attr('y2', (d) => Number.isFinite(d.target?.y) ? d.target.y : 0);
+
+      routeOverlayNodeGroup.selectAll('circle')
+        .data(labelNodes, (d) => d.name)
+        .attr('cx', (d) => Number.isFinite(d.x) ? d.x : 0)
+        .attr('cy', (d) => Number.isFinite(d.y) ? d.y : 0);
+
+      routeOverlayLabelGroup.selectAll('text')
+        .data(labelNodes, (d) => d.name)
+        .attr('x', (d) => Number.isFinite(d.x) ? d.x : 0)
+        .attr('y', (d) => Number.isFinite(d.y) ? d.y - 14 : 0);
+    };
+
+    updateRouteOverlayPositions();
+  };
+
+  if (currentRoutePlan && currentRoutePlan.status === 'ok') {
+    if (Array.isArray(currentRoutePlan.jSpacePath) && currentRoutePlan.jSpacePath.length) {
+      applyRouteHighlight(currentRoutePlan.jSpacePath);
+    }
+    if (currentRoutePlan.mode === 'hybrid' || currentRoutePlan.mode === 'kspace') {
+      renderRouteOverlay(currentRoutePlan);
+    }
+  }
 
   if (window.__bookmarkViewerNicknameListener) {
     window.removeEventListener('systemNicknameUpdated', window.__bookmarkViewerNicknameListener);
@@ -1911,6 +2828,7 @@ export function displayMap(data, options = {}) {
         updateCrosshair(selectedNode, classColors);
       }
     }
+    updateRouteOverlayPositions();
   }
 
   function updateCrosshair(d, classColors) {

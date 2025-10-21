@@ -1,4 +1,4 @@
-const CACHE_NAME = 'bookmark-mapper-cache-v21';
+const CACHE_NAME = 'bookmark-mapper-cache-v33';
 const ASSET_PATHS = [
     '.',
     'index.html',
@@ -10,10 +10,12 @@ const ASSET_PATHS = [
     'js/utils.js',
     'js/main.js',
     'js/map.js',
+    'js/routesModule.js',
     'js/modules/map/buildSystemTag.js',
     'js/modules/map/displayMap.js',
     'js/modules/map/dragHandlers.js',
     'js/modules/map/extractSystems.js',
+    'js/modules/map/routePlanner.js',
     'data/systems.json',
     'assets/icons/icon-192x192.png',
     'assets/icons/icon-512x512.png',

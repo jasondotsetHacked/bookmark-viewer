@@ -6,7 +6,8 @@ const VISIBILITY_STORAGE_KEY = `${STORAGE_PREFIX}visibility`;
 
 const DEFAULT_LAYOUTS = {
     map: { x: 0, y: 0, w: 26, h: 18 },
-    bookmarks: { x: 0, y: 18, w: 24, h: 14 },
+    bookmarks: { x: 0, y: 18, w: 16, h: 14 },
+    routes: { x: 16, y: 18, w: 8, h: 14 },
     signatures: { x: 26, y: 0, w: 8, h: 20 },
     intel: { x: 26, y: 20, w: 8, h: 6 },
     stats: { x: 26, y: 26, w: 8, h: 8 }
@@ -833,7 +834,8 @@ function buildLargeLayout(widthUnits, heightUnits) {
 
     return {
         map: { x: 0, y: 0, w: mainWidth, h: mapHeight },
-        bookmarks: { x: 0, y: mapHeight, w: mainWidth, h: bookmarksHeight },
+        bookmarks: { x: 0, y: mapHeight, w: mainWidth - 8, h: bookmarksHeight },
+        routes: { x: mainWidth - 8, y: mapHeight, w: 8, h: bookmarksHeight },
         signatures: { x: mainWidth, y: 0, w: sideWidth, h: signaturesHeight },
         intel: { x: mainWidth, y: signaturesHeight, w: sideWidth, h: intelHeight },
         stats: { x: mainWidth, y: signaturesHeight + intelHeight, w: sideWidth, h: statsHeight }
@@ -876,7 +878,8 @@ function buildMediumLayout(widthUnits, heightUnits) {
 
     return {
         map: { x: 0, y: 0, w: widthUnits, h: mapHeight },
-        bookmarks: { x: 0, y: mapHeight, w: widthUnits, h: bookmarksHeight },
+        bookmarks: { x: 0, y: mapHeight, w: leftWidth, h: bookmarksHeight },
+        routes: { x: leftWidth, y: mapHeight, w: rightWidth, h: bookmarksHeight },
         signatures: { x: 0, y: lowerY, w: leftWidth, h: bottomHeight },
         intel: { x: leftWidth, y: lowerY, w: rightWidth, h: intelHeight },
         stats: { x: leftWidth, y: lowerY + intelHeight, w: rightWidth, h: statsHeight }
@@ -894,8 +897,9 @@ function buildSmallLayout(widthUnits, heightUnits) {
         MIN_GRID_H,
         Math.max(MIN_GRID_H, heightUnits - mapHeight - MIN_GRID_H * 2)
     );
+    const routesHeight = bookmarksHeight;
 
-    const lowerStart = mapHeight + bookmarksHeight;
+    const lowerStart = mapHeight + bookmarksHeight + routesHeight;
     const remainingHeight = Math.max(MIN_GRID_H * 2, heightUnits - lowerStart);
     const signaturesHeight = clamp(
         Math.round(remainingHeight * 0.4),
@@ -913,6 +917,7 @@ function buildSmallLayout(widthUnits, heightUnits) {
     return {
         map: { x: 0, y: 0, w: widthUnits, h: mapHeight },
         bookmarks: { x: 0, y: mapHeight, w: widthUnits, h: bookmarksHeight },
+        routes: { x: 0, y: mapHeight + bookmarksHeight, w: widthUnits, h: routesHeight },
         signatures: { x: 0, y: lowerStart, w: widthUnits, h: signaturesHeight },
         intel: { x: 0, y: lowerStart + signaturesHeight, w: widthUnits, h: intelHeight },
         stats: { x: 0, y: statsStart, w: widthUnits, h: statsHeight }

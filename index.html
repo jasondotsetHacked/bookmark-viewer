@@ -52,7 +52,23 @@
                 <div class="module-resize-handle" aria-hidden="true"></div>
             </article>
 
-            <article class="module" data-module-id="bookmarks" data-grid-w="6" data-grid-h="5">
+            <article class="module" data-module-id="routes" data-grid-w="3" data-grid-h="4">
+                <header class="module-header">
+                    <h2>Routes</h2>
+                </header>
+                <div class="module-body routes-module">
+                    <div class="routes-add">
+                        <input id="routesAddInput" class="routes-input" type="text" autocomplete="off" placeholder="Pin a system...">
+                        <button id="routesAddButton" class="routes-add-button" type="button">Pin</button>
+                    </div>
+                    <div id="routesMessage" class="routes-message" aria-live="polite"></div>
+                    <ul id="routesList" class="routes-list"></ul>
+                    <div id="routesEmpty" class="routes-empty" hidden>No pinned routes yet.</div>
+                </div>
+                <div class="module-resize-handle" aria-hidden="true"></div>
+            </article>
+
+            <article class="module" data-module-id="bookmarks" data-grid-w="5" data-grid-h="5">
                 <header class="module-header">
                     <h2>Bookmarks</h2>
                 </header>
@@ -192,6 +208,7 @@
     <script type="module" src="js/signatures.js"></script>
     <script type="module" src="js/intel.js"></script>
     <script type="module" src="js/map.js"></script>
+    <script type="module" src="js/routesModule.js"></script>
     <script type="module" src="js/clipboard.js"></script>
     <script type="module" src="js/utils.js"></script>
     <script type="module" src="js/main.js"></script>
